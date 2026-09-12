@@ -10,30 +10,52 @@ HPC cluster (comp3710 partition, A100 GPUs).
 Lab2/
 ├── README.md
 ├── .gitignore
-├── task1_vae/              # Section 4.4, Task 1
+├── demo2_q1-3_overview.pdf   # teaching-staff reference doc, Parts 1-3
+├── part1_dft/                # Part 1
+│   ├── comp3710_lab2.py
+│   ├── job.sh
+│   ├── lab2.txt
+│   └── results/
+├── part2_eigenfaces/         # Part 2
+│   ├── lab2_part2_eigenfaces.py
+│   ├── job2.sh
+│   ├── lab2_part2.txt
+│   └── results/
+├── part3_cnn_dawnbench/      # Part 3
+│   ├── 3.1_cnn_classifier/
+│   │   ├── lab2_part3.1_cnn.py
+│   │   ├── job3.sh
+│   │   ├── lab2_part3.1.txt
+│   │   └── results/
+│   └── 3.2_dawnbench/
+│       ├── lab2_part3.2_train.py      # DataLoader baseline
+│       ├── lab2_part3.2_train_gpu.py  # final GPU-resident pipeline
+│       ├── lab2_part3.2_demo.py       # live epoch + inference script
+│       ├── job4.sh, job5.sh, job6.sh
+│       ├── lab2_part3.2.txt
+│       └── Part3.2_DAWNBench_Story.txt
+├── task1_vae/                # Section 4.4, Task 1
 │   ├── train_vae.py
 │   ├── job_vae.sh
+│   ├── explanation.txt
 │   └── results/
-├── task2_unet/              # Section 4.4, Task 2
+├── task2_unet/                # Section 4.4, Task 2
 │   ├── train_unet.py
 │   ├── infer_unet.py
 │   ├── job_unet.sh
 │   ├── job_unet_infer.sh
+│   ├── lab2_part4_task2.txt
 │   └── results/
-└── task3_gan/                # Section 4.4, Task 3 (Hard tier)
+└── task3_gan/                  # Section 4.4, Task 3 (Hard tier)
     ├── train_gan_mnist.py    # Phase A: MNIST prototype
     ├── job_gan_mnist.sh
     ├── train_gan_oasis.py    # Phase B: OASIS training
     ├── job_gan_oasis.sh
     ├── regenerate_gan_samples.py
     ├── job_gan_regen.sh
+    ├── lab2_part4_task3.txt
     └── results/
 ```
-
-> **TODO (not yet added):** Part 1 (DFT/Fourier), Part 2 (Eigenfaces/PCA +
-> Random Forest), Part 3.1 (CNN classifier), Part 3.2 (DAWNBench ResNet-18
-> challenge), Advanced Git course evidence. Folders and sections below for
-> these will be added as they're completed.
 
 ## Environment
 
@@ -42,7 +64,174 @@ Lab2/
 - **Framework:** PyTorch, conda environment `torch` (Python 3.11).
 - **Dataset:** OASIS preprocessed brain MRI slices, `/home/groups/comp3710/OASIS`
   (256x256 grayscale PNGs; segmentation masks with 4 classes: background,
-  CSF, grey matter, white matter).
+  CSF, grey matter, white matter). CIFAR-10 and Labeled Faces in the Wild
+  (LFW) downloaded via torchvision/scikit-learn for Parts 2/3.
+
+---
+
+## Part 1: Discrete Fourier Transform
+
+**Goal:** reconstruct a square wave from its Fourier series, port the
+implementation from NumPy to PyTorch, and compare a GPU-native naive DFT
+against NumPy's FFT across increasing signal sizes.
+
+**Approach:** the square wave and its Fourier series reconstruction were
+vectorised in PyTorch (an outer product across harmonics × time samples,
+rather than a Python loop) so the whole computation can be dispatched to
+the GPU in one shot. The naive DFT was expressed as multiplication by an
+explicit N×N complex exponential matrix (`W @ x`), turning an O(N²) nested
+loop into a single dense matmul — the form GPUs are actually built to
+accelerate. This was benchmarked against NumPy's O(N log N) FFT and a
+brute-force CPU-loop DFT across N = 256 up to 32,768.
+
+**Results:**
+
+| N | GPU naive DFT | NumPy FFT | Faster |
+|---|---|---|---|
+| 256 | 0.064s | 0.0047s | NumPy FFT |
+| 1,024 | 0.00065s | 0.000056s | NumPy FFT |
+| 4,096 | 0.0015s | 0.00021s | NumPy FFT |
+| 8,192 | 0.0049s | 0.00029s | NumPy FFT |
+| 16,384 | 0.019s | 0.00053s | NumPy FFT |
+| 32,768 | 0.462s | 0.0013s | NumPy FFT |
+
+NumPy FFT wins at every size tested, and the gap *widens* with N — direct
+evidence that a smarter algorithm (O(N log N)) beats a brute-force one
+(O(N²)) parallelised on a GPU, until N is large enough for raw parallelism
+to outweigh doing quadratically more total work. The reconstruction plot
+also clearly shows the Gibbs phenomenon: adding more harmonics sharpens
+the approximation but never removes the fixed-height overshoot at the
+signal's discontinuities, just compresses it closer to the edge.
+
+**Key files:** `comp3710_lab2.py` (square wave, Fourier reconstruction,
+naive DFT, timing sweep), `job.sh`.
+
+**Results:** see `part1_dft/results/` — `square_wave_reconstruction.png`.
+
+---
+
+## Part 2: Eigenfaces (PCA + Random Forest)
+
+**Goal:** compute Eigenfaces via PCA on the Labeled Faces in the Wild
+(LFW) dataset and classify identities with a Random Forest baseline.
+
+**Approach:** PCA was computed via SVD directly on the mean-centred data
+matrix (`np.linalg.svd`) rather than eigendecomposing an explicit
+covariance matrix — numerically equivalent, but more stable and avoids
+ever forming the covariance matrix explicitly. The top 150 components
+were used to project both train and test sets into "face space," and a
+Random Forest (150 estimators) was trained on the projected features.
+
+**Results:**
+
+- Dataset: 1,288 samples, 1,850 raw pixel features, 7 identity classes.
+- PCA: 150 components retained ~95% cumulative explained variance (see
+  compactness curve).
+- Random Forest test accuracy: **62.4%** overall.
+
+| Class | Precision | Recall | Support |
+|---|---|---|---|
+| Ariel Sharon | 0.00 | 0.00 | 13 |
+| Colin Powell | 0.69 | 0.60 | 60 |
+| Donald Rumsfeld | 0.62 | 0.19 | 27 |
+| George W Bush | 0.62 | 0.90 | 146 |
+| Gerhard Schroeder | 0.53 | 0.32 | 25 |
+| Hugo Chavez | 0.57 | 0.53 | 15 |
+| Tony Blair | 0.63 | 0.33 | 44 |
+
+The low overall accuracy is driven by significant class imbalance (George
+W Bush alone is ~45% of the test set) rather than a modelling error — the
+classifier over-predicts the majority class, and this is directly
+addressed by Part 3.1's CNN, which substantially outperforms this
+PCA+Random Forest baseline on the identical dataset.
+
+**Key files:** `lab2_part2_eigenfaces.py`, `job2.sh`.
+
+**Results:** see `part2_eigenfaces/results/` — `eigenfaces_gallery.png`,
+`compactness.png`.
+
+---
+
+## Part 3.1: CNN Classifier (LFW)
+
+**Goal:** implement a simple CNN (two 3×3 conv layers, 32 filters each,
+dense classifier head) for the same LFW dataset used in Part 2, and
+compare against the PCA+Random Forest baseline.
+
+**Approach:** raw LFW images (`[N, H, W]`) were reshaped to add a channel
+dimension (`[N, 1, H, W]`) for `Conv2d`. Trained with Adam and
+cross-entropy loss over 30 epochs.
+
+**Results:** **88.2-88.5% test accuracy**, a large improvement over Part
+2's 62.4% PCA+Random Forest baseline. This demonstrates the core
+advantage of CNNs over a linear-decomposition-plus-classifier pipeline:
+convolution preserves 2D spatial locality (which pixels are near which),
+and the feature extractor and classifier are trained jointly end-to-end,
+whereas PCA's components are optimised purely for variance, with no
+awareness of which variance actually helps distinguish classes.
+
+**Key files:** `lab2_part3.1_cnn.py`, `job3.sh`.
+
+**Results:** see `3.1_cnn_classifier/results/` — `cnn_loss_curve.png`.
+
+---
+
+## Part 3.2: DAWNBench Challenge (ResNet-18 on CIFAR-10)
+
+**Goal:** implement ResNet-18 from scratch (no pretrained weights) for
+CIFAR-10, hit >90% accuracy in under 30 minutes, and chase the harder
+stretch goal of ~94% accuracy in a time equivalent to or faster than the
+~360-second V100 GPU reference benchmark.
+
+**Approach:** extensive, deliberately isolated experimentation (full
+iteration-by-iteration log in `Part3.2_DAWNBench_Story.txt`). Key
+techniques: a CIFAR-adapted ResNet-18 stem (3×3 stride-1 conv, no
+maxpool, since the standard ImageNet stem destroys too much spatial
+detail on 32×32 inputs), mixed precision via `torch.cuda.amp` with
+`GradScaler`, SGD + Nesterov momentum + OneCycle LR (chosen over Adam —
+empirically reaches higher final accuracy on CNN vision tasks), and
+Test-Time Augmentation (horizontal-flip-averaged predictions at eval
+time, near-zero cost). The single biggest discovery: the original
+`DataLoader`-based pipeline was CPU-bound, not GPU-bound — replacing it
+with the entire dataset preloaded once onto the A100 as a single GPU
+tensor, with augmentation (random crop, flip) rewritten as GPU tensor
+ops, gave a ~7x per-epoch speedup.
+
+**Results (key milestones):**
+
+| Stage | Configuration | Accuracy | Time |
+|---|---|---|---|
+| Baseline | 20ep, DataLoader pipeline | 93.06% | 350.3s |
+| Best under 360s (DataLoader) | 22ep, TTA, cuDNN+channels_last | 93.86% | 342.8s |
+| Confirmed recipe hits 94%+ | 30ep, DataLoader pipeline | 94.36% | 470.5s |
+| **Final: GPU-resident pipeline** | **30ep, data preloaded on GPU** | **94.45%** | **64.9s** |
+
+Final result clears the 94% target with real margin and beats the 360s
+V100 benchmark by roughly 5.5x, on an A100 (a faster GPU than the
+original V100 reference, disclosed for fair comparison). Multiple
+controlled experiments (learning rate sweep, batch size 512 vs 1024,
+Cutout augmentation with/without) are documented in full in
+`Part3.2_DAWNBench_Story.txt`, including a batch-size negative result
+(1024 consistently underperformed 512, consistent with the known
+"generalization gap" of large-batch training) and an abandoned EMA
+(Exponential Moving Average) attempt with a known implementation bug,
+reverted rather than debugged further under time constraints.
+
+Mark 2 (live epoch + inference during the demo) is handled by a
+deliberately separate script (`lab2_part3.2_demo.py`) that loads the
+already-trained weights, runs one real training epoch live and timed,
+then performs inference on a small test batch — verified working
+(11.4s/epoch, 16/16 correct sample predictions).
+
+**Key files:** `lab2_part3.2_train.py` (DataLoader baseline),
+`lab2_part3.2_train_gpu.py` (final GPU-resident pipeline, produces the
+saved model weights), `lab2_part3.2_demo.py` (live demo script),
+`job4.sh` / `job5.sh` / `job6.sh`.
+
+**Results:** no plot images were generated for this part (results were
+tracked via stdout logs/printed metrics rather than saved figures); see
+`Part3.2_DAWNBench_Story.txt` for the complete iteration log,
+concept explanations, and results table.
 
 ---
 
@@ -156,19 +345,19 @@ across ventricle shape, brain outline, and brightness — no mode collapse.
 
 ## AI Usage
 
-Claude (Anthropic) was used throughout Section 4.4 for architecture design
-discussion, debugging (including catching the GAN visualisation bug and an
-argparse import-order bug in the UNet inference script), and code
-generation, with meaningful back-and-forth on design tradeoffs (resolution,
-latent dimensionality, loss function choice) rather than single-prompt
-generation. Prompt history available on request per the fair AI use
-policy.
+Claude (Anthropic) was used throughout this lab for architecture design
+discussion, debugging, and code generation, with meaningful back-and-forth
+on design tradeoffs (e.g. resolution, latent dimensionality, loss function
+choice, learning rate schedules, data pipeline design) rather than
+single-prompt generation. Notable debugging assists included: an
+SBATCH heredoc formatting error, a Slurm partition/account permissions
+issue, a GAN visualisation indexing bug, and identifying a CPU-bound
+DataLoader bottleneck in the DAWNBench challenge (Part 3.2) that was
+resolved with a GPU-resident data pipeline. Prompt history and full
+iteration logs (see `part3_cnn_dawnbench/3.2_dawnbench/Part3.2_DAWNBench_Story.txt`)
+available on request per the fair AI use policy.
 
 ## TODO
 
-- [ ] Add Part 1 (DFT/Fourier reconstruction, naive vs FFT timing) section + folder
-- [ ] Add Part 2 (Eigenfaces PCA + Random Forest) section + folder
-- [ ] Add Part 3.1 (CNN classifier on LFW) section + folder
-- [ ] Add Part 3.2 (DAWNBench ResNet-18 on CIFAR10) section + folder
 - [ ] Add Advanced Git course completion evidence
 - [ ] Review final commit history before submission deadline
