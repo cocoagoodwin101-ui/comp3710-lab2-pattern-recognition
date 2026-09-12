@@ -1,0 +1,77 @@
+Fetching LFW dataset...
+X_min: 0.0 X_max: 1.0
+X_train shape: (966, 1, 50, 37)
+SimpleCNN(
+  (conv1): Conv2d(1, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+  (conv2): Conv2d(32, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+  (relu): ReLU()
+  (pool): MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+  (fc1): Linear(in_features=3456, out_features=128, bias=True)
+  (fc2): Linear(in_features=128, out_features=7, bias=True)
+)
+Epoch 1/30  loss: 1.7462
+Epoch 5/30  loss: 1.0740
+Epoch 10/30  loss: 0.3595
+Epoch 15/30  loss: 0.1613
+Epoch 20/30  loss: 0.0525
+Epoch 25/30  loss: 0.0163
+Epoch 30/30  loss: 0.0083
+
+Test Accuracy: 0.8820
+
+88.2% test accuracy vs 62.4% for PCA+Random Forest — a huge jump, why:
+
+PCA is linear — it can only capture variance as straight-line 
+combinations of pixel intensities. It has no concept of "edge," 
+"eyebrow," or spatial relationships between neighbouring pixels; 
+flattening the image into a vector throws that structure away before 
+PCA even sees it.
+Convolution preserves spatial locality — each 3×3 filter looks 
+at a small neighbourhood of pixels and slides across the whole 
+image, so the network can learn local patterns (edges, then 
+combinations of edges into shapes) and where they occur relative 
+to each other. That's structural information PCA never had access to.
+The features and classifier are trained jointly, end-to-end, 
+via backpropagation — the conv filters are optimised specifically 
+to produce features that help this classification task, 
+whereas PCA's components are optimised to explain variance 
+generally, with no awareness of which variance actually matters 
+for telling people apart.
+
+loss dropped to 0.0083 by epoch 30 — that's very close to zero 
+training loss, which is a classic sign of overfitting, especially 
+on a small dataset (966 training images, only 7 classes).
+
+is this a good result / would you trust it: training loss this 
+low with a dataset this small suggests the model may be memorising 
+rather than purely generalising — check with techniques 
+like dropout, data augmentation, or a validation curve to see if 
+test performance plateaus or degrades before training loss bottoms out.
+
+Image:
+CNN loss curve
+Steep drop from epoch 1-10 — the network is rapidly learning the most 
+obvious, easy-to-find patterns that separate the 7 classes 
+(biggest gradient signal early on). Then it flattens and decays 
+smoothly from ~epoch 12 onward, gradually squeezing out the last 
+bit of error as it fine-tunes weights, eventually crawling down 
+toward ~0.01 by epoch 30.
+
+Small bump around epoch 21-22 — loss ticks up slightly before 
+continuing down. This is just normal stochastic noise from 
+mini-batch training — each epoch shuffles the data into different 
+random batches (torch.randperm), so the exact gradient direction 
+wiggles a bit batch to batch. It's not a bug, and Adam's adaptive 
+step sizes generally recover from small bumps like this without issue, 
+which is exactly what happened here — it dips right back down and 
+keeps converging.
+
+the smooth, monotonic-ish decline down to near-zero training loss, 
+with no plateau, is the textbook picture of a model that's had free 
+rein to fit the training set almost perfectly. Since you don't have a 
+separate validation curve running alongside it, you can't see from 
+this plot alone whether test performance would have kept improving or 
+started degrading past epoch 30 — training longer help? loss curve 
+alone doesn't tell me — 
+I'd want a validation loss tracked in parallel to check for that 
+divergence
