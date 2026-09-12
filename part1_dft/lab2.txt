@@ -1,0 +1,34 @@
+Part 1:
+N=  256  GPU naive DFT: 1.276352s   NumPy FFT: 0.077221s   CPU naive DFT: 0.063703s #GPU warm up/cold-start overhead
+N= 1024  GPU naive DFT: 0.000625s   NumPy FFT: 0.000057s   CPU naive DFT: 1.043676s
+N= 4096  GPU naive DFT: 0.050381s   NumPy FFT: 0.000195s   CPU naive DFT: skipped
+
+The very first CUDA operation in any script pays a one-time tax: 
+creating the CUDA context, initialising the memory allocator, 
+and JIT-compiling the kernels for operations like complex exp()
+and complex matmul. That overhead is fixed regardless of problem size,
+so for a tiny N=256 problem, the actual computation is microseconds 
+but the setup tax is over a second.
+
+N	GPU naive DFT	NumPy FFT	Ratio (GPU/FFT)
+256	    0.064s	    0.0047s	    ~14× slower
+1024	0.00065s	0.000056s	~12× slower
+4096	0.0015s	    0.00021s	~7× slower
+8192	0.0049s	    0.00029s	~17× slower
+16384	0.019s	    0.00053s	~35× slower
+32768	0.462s	    0.0013s	    ~340× slower
+
+Image: 
+Square wave reconstruction
+N=1 (just the fundamental) is a smooth sine wave, barely resembling a square wave yet — makes sense, since it's literally just one sinusoid.
+
+N=3 and N=5 progressively sharpen toward the square edges, adding more oscillation detail in the flat regions — each added odd harmonic contributes higher-frequency correction terms that push the approximation closer to the sharp transitions.
+
+The Gibbs phenomenon is clearly visible in both N=3 and N=5: right at 
+the jump discontinuities (t=0, 0.5, 1.0), the reconstruction overshoots 
+past ±1.0 before settling — that little "spike" poking above 1.0 and 
+below -1.0 right at the edges.Adding more harmonics does not shrink 
+that overshoot, it just squeezes the ringing into a narrower 
+region closer to the discontinuity. If you look closely, N=5's 
+overshoot peak is roughly the same height as N=3's, just compressed 
+into less horizontal space.
