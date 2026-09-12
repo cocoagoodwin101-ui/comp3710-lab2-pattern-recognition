@@ -1,0 +1,228 @@
+COMP3710 LAB 2 - TASK 4.4.2: UNET SEGMENTATION ON OASIS
+Demo prep summary
+======================================================================
+
+OVERVIEW
+----------------------------------------------------------------------
+Goal: segment OASIS brain MRI slices into 4 classes (background, CSF,
+grey matter, white matter) using a UNet, hitting >0.9 DSC on EVERY
+class individually, with categorical (one-hot) output and a live
+inference demonstration.
+
+Dataset: /home/groups/comp3710/OASIS
+  - keras_png_slices_train/validate/test: 256x256 grayscale images
+  - keras_png_slices_seg_train/validate/test: matching masks, paired
+    by filename (case_XXX_slice_N.nii.png <-> seg_XXX_slice_N.nii.png)
+  - Masks contain exactly 4 pixel values {0, 85, 170, 255}, confirmed
+    consistent across a random sample -- mapped to class indices
+    {0,1,2,3} via integer division by 85 (exact, since values are
+    exact multiples of 85)
+
+Environment: Rangpur HPC, comp3710 partition (A100 GPUs), PyTorch,
+conda env "torch", trained via sbatch batch jobs.
+
+
+THE STORY (CHRONOLOGICAL)
+----------------------------------------------------------------------
+1. Explored the seg mask folder structure and confirmed the filename
+   pairing convention and the 4-class pixel value scheme before
+   writing any code.
+
+2. Made two deliberate design decisions, explained with tradeoffs
+   rather than defaulted to:
+     a. Resolution: kept the NATIVE 256x256 resolution, unlike the
+        VAE's deliberate downsizing to 128x128. Reasoning: Task 2 has
+        a strict >0.9-DSC-per-class bar (unlike the VAE's no-bar
+        situation), and small/thin structures like CSF are much more
+        resolution-sensitive than "does this look roughly like a
+        brain." A useful side benefit of this choice: since the data
+        is already 256x256, no image resizing was needed at all --
+        which also avoided a subtle trap, since resizing a
+        categorical mask with anything other than nearest-neighbour
+        interpolation would invent nonsense intermediate class values
+        at boundaries.
+     b. Loss function: combined Dice + cross-entropy, not asked as an
+        open question since it has a clear best-practice answer here.
+        Dice loss directly optimises the same overlap quantity as the
+        DSC evaluation metric, so training loss and the grading
+        metric are aligned rather than being a rough proxy for each
+        other. Cross-entropy is added because Dice gradients are
+        noisy when overlap is near zero early in training.
+
+3. Built a standard 4-downsampling-stage UNet (DoubleConv blocks,
+   channel widths 32->64->128->256->512 bottleneck, skip connections
+   concatenating each encoder stage into its matching decoder stage).
+   Output: 4 raw logit channels (categorical/one-hot structure),
+   argmax applied outside the network for hard predictions.
+
+4. Applied the data-preloading lesson learned from an earlier
+   optimisation pass (proactively, before hitting the problem again):
+   all 9664 train + 1120 validation image/mask pairs are decoded from
+   disk ONCE at dataset construction and kept in memory as tensors,
+   rather than re-reading PNGs from the shared filesystem every epoch.
+
+5. Trained for 40 epochs, batch size 16, tracking per-class DSC on
+   the validation set every single epoch (not just at the end), and
+   saving the best checkpoint by mean DSC separately from the
+   final-epoch checkpoint.
+
+6. Result: all four classes passed 0.9 DSC comfortably by epoch 2 and
+   stayed there. Validation loss got noisier and stopped improving
+   after roughly epoch 15-20 (mild overfitting signal) while training
+   loss kept falling -- noted honestly rather than hidden, since it
+   didn't actually hurt the DSC scores.
+
+7. Ran a live single-slice inference check via a separate, fast
+   standalone script (infer_unet.py) on an unseen test-set image
+   (case_453_slice_8.nii.png), confirming the training-time DSC
+   numbers hold up on genuine forward inference, not just
+   training-time metrics.
+
+8. Along the way, fixed two unrelated software issues worth
+   mentioning for the "software engineering practice" marking
+   criterion:
+     a. sbatch job scripts were producing a harmless but confusing
+        stderr error ("activate does not accept more than one
+        argument") caused by bash's `source somefile` inheriting the
+        calling script's positional parameters. Fixed by using
+        conda's proper `shell.bash hook` instead of sourcing
+        `activate` directly.
+     b. infer_unet.py's `from train_unet import ...` line triggered
+        train_unet.py's own argparse.parse_args() as an import-time
+        side effect, using infer_unet.py's actual command-line
+        arguments -- which train_unet's parser didn't recognise,
+        causing a crash. Fixed by switching train_unet.py to
+        parse_known_args(), so it tolerates being imported with
+        arguments meant for a different script.
+
+
+FINAL RESULTS TABLE
+----------------------------------------------------------------------
+Class          | Final epoch DSC | Live single-slice DSC | Threshold
+---------------|------------------|------------------------|----------
+background     | 0.9995           | 0.9989                 | PASS (>0.9)
+CSF             | 0.9535           | 0.9554                 | PASS (>0.9)
+grey_matter     | 0.9634           | 0.9418                 | PASS (>0.9)
+white_matter    | 0.9777           | 0.9595                 | PASS (>0.9)
+
+Best mean DSC during training: 0.9751 (saved separately as
+unet_best.pt, used for the live inference check)
+
+Training config: 40 epochs, batch size 16, lr=1e-3 Adam, base channel
+width 32, combined Dice+CE loss, 256x256 native resolution, ~38s/epoch
+on A100 after data preloading.
+
+
+WHAT EACH SAVED IMAGE SHOWS
+----------------------------------------------------------------------
+loss_curve.png
+  Train loss steadily decreasing throughout all 40 epochs; validation
+  loss decreases initially then plateaus/gets noisier from roughly
+  epoch 15-20 onward -- the mild overfitting signal, without DSC
+  actually degrading.
+
+dsc_curve.png
+  Per-class validation DSC across all 40 epochs, with a red dashed
+  line at the 0.9 threshold. All four classes visibly clear the line
+  early and stay there with some epoch-to-epoch noise (particularly
+  visible as small dips around epochs 6, 13, 22, 31, 35 -- days where
+  validation loss also spiked, consistent with the same underlying
+  noise).
+
+predictions.png
+  6 validation slices: original image / ground truth mask / predicted
+  mask, side by side. Used to visually justify the DSC numbers rather
+  than just quoting them.
+
+live_inference.png
+  The live single-slice demo output: one unseen test image
+  (case_453_slice_8.nii.png), its ground truth mask, and the model's
+  prediction. Close visual match on ventricle shape, CSF rim
+  thickness, and cortical folding pattern -- differences are only at
+  fine boundary edges, consistent with DSC scores in the 0.94-0.96
+  range for the non-background classes.
+
+
+OUTCOME
+----------------------------------------------------------------------
+Task 2 requirement (>0.9 DSC on ALL labels, categorical output, live
+inference demonstration) is met with comfortable margin on every
+class, confirmed on both the full validation set and a genuine
+held-out single-slice inference run -- not just a training-time
+number.
+
+
+LIKELY TUTOR QUESTIONS AND ANSWERS
+----------------------------------------------------------------------
+Q: What does UNet do differently from a plain encoder-decoder, and
+   why does that matter for segmentation?
+A: UNet adds skip connections: at each downsampling stage, the
+   feature map is saved and concatenated directly into the matching
+   upsampling stage in the decoder. This lets the network combine
+   coarse "what is this region" context from deep layers with fine
+   "exactly where is the boundary" detail preserved from early
+   layers -- critical for segmentation, where losing spatial detail
+   (like a VAE's bottleneck does deliberately) would destroy exactly
+   the boundary precision the task needs.
+
+Q: Why combined Dice + cross-entropy loss instead of just one?
+A: Dice loss directly optimises the same overlap quantity as DSC, the
+   metric we're graded on, so training loss and the grading metric
+   are aligned. Cross-entropy is added because Dice's gradients are
+   noisy/unstable when predicted and true masks have near-zero
+   overlap, which is common early in training before the model has
+   learned anything -- CE gives a smoother starting signal.
+
+Q: Why did you keep the images at full 256x256 instead of downsizing
+   like you did for the VAE?
+A: The VAE had no accuracy requirement to clear, so we could trade
+   fidelity for speed. Task 2 has a strict per-class DSC bar, and
+   small/thin structures like CSF are much more sensitive to
+   resolution loss than general visual plausibility is -- so we
+   deliberately kept full resolution here despite the slower
+   training, and it also meant no mask resizing was needed at all.
+
+Q: How did you map the raw mask pixel values to class indices?
+A: The masks only contain {0, 85, 170, 255} -- exact multiples of 85
+   -- so integer division by 85 gives exact class indices {0,1,2,3}
+   with no rounding error.
+
+Q: Why is the background DSC so much higher (0.999) than the other
+   classes (0.94-0.98)?
+A: Background is the overwhelming majority of pixels in any slice and
+   has a simple, consistent appearance (empty space outside the
+   skull), making it the easiest class by far. The other three
+   classes are smaller, more complex, anatomically variable
+   structures, so lower (but still comfortably passing) DSC there is
+   expected, not a red flag.
+
+Q: You mentioned mild overfitting after epoch ~15-20 -- why not just
+   train for fewer epochs then?
+A: Because DSC itself didn't get meaningfully worse even as
+   validation loss got noisier -- the two metrics measure different
+   things (loss is a smooth proxy, DSC is the actual discrete metric
+   we care about), and DSC stayed stable through epoch 40. We also
+   don't rely on picking the exact right epoch by eye: unet_best.pt
+   was saved automatically whenever mean validation DSC hit a new
+   best, so the final deliverable isn't vulnerable to over-training
+   even without early stopping logic.
+
+Q: How do you know the live inference result isn't cherry-picked?
+A: It wasn't chosen by hand -- the inference script picks a slice
+   either randomly or by filename, and the result (0.94-0.96 DSC on
+   the non-background classes) is consistent with, not better than,
+   the full validation-set averages reported during training. If
+   anything it's a fair, unremarkable example, which is the point.
+
+Q: What was the import-time argparse bug, and what does it show about
+   your development process?
+A: infer_unet.py imports classes and constants from train_unet.py,
+   but that import accidentally re-executed train_unet.py's own
+   command-line argument parsing using infer_unet.py's real
+   arguments, which train_unet's parser didn't recognise, crashing
+   the script. Fixed by making train_unet.py tolerant of unknown
+   arguments (parse_known_args instead of parse_args) since it can be
+   imported by other scripts, not just run standalone. It's a decent
+   example of a bug that only shows up when code gets reused across
+   files, and of testing that reuse path rather than assuming each
+   script works in isolation forever.

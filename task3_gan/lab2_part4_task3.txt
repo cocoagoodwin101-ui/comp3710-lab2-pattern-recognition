@@ -1,0 +1,247 @@
+COMP3710 LAB 2 - TASK 4.4 TASK 3 (HARD TIER): WGAN-GP BRAIN GENERATION
+Demo prep summary
+======================================================================
+
+OVERVIEW
+----------------------------------------------------------------------
+Goal (optional hard-tier task, on top of Tasks 1 and 2): generate
+realistic, diverse brain MRI slices from noise using a GAN, with mode
+collapse fully resolved and evidence of training provided (generated
+images, loss plots).
+
+Approach chosen: WGAN-GP (Wasserstein GAN with Gradient Penalty)
+rather than a vanilla DCGAN, specifically for training stability --
+deliberately the more complex option, chosen upfront knowing it would
+need more explaining but reduce the risk of the exact failure mode
+(mode collapse) the lab explicitly warns about and grades on.
+
+Environment: Rangpur HPC. MNIST prototype ran on the cpu partition
+(no GPU needed for a 32x32 smoke test); OASIS training ran on the
+comp3710 GPU partition.
+
+
+THE STORY (CHRONOLOGICAL)
+----------------------------------------------------------------------
+1. Explained WGAN-GP's mechanics before writing code: critic (not
+   "discriminator" -- outputs a raw score, no sigmoid) trained to
+   maximise E[critic(real)] - E[critic(fake)]; generator trained to
+   maximise E[critic(fake)]; a gradient penalty term keeps the critic
+   close to 1-Lipschitz, which the underlying Wasserstein-distance
+   approximation requires to be mathematically valid; critic trained
+   5 steps per 1 generator step (standard ratio); no BatchNorm in the
+   critic specifically, since it interacts badly with the per-sample
+   gradient penalty (InstanceNorm used instead); Adam with
+   beta1=0, beta2=0.9 (the WGAN-GP paper's specific recommendation,
+   notably different from a vanilla DCGAN's typical beta1=0.5).
+
+2. Phase A: prototyped on MNIST (resized to 32x32) first, deliberately,
+   rather than debugging directly on OASIS -- MNIST trains in
+   seconds/minutes and gives an unambiguous "did recognisable digits
+   form" signal, versus OASIS where a bug and "just needs more
+   training" would be much harder to tell apart.
+
+3. First MNIST attempt ran far slower than expected (15+ minutes with
+   no epoch completed) -- diagnosed as the job only being allocated 1
+   CPU core by default while PyTorch's CPU conv operations need
+   multiple threads to run efficiently. Fixed with
+   --cpus-per-task=4 and an explicit torch.set_num_threads() call
+   reading the Slurm-allocated CPU count.
+
+4. Ran a fast MNIST smoke test (5000-image subset, 10 epochs, ~780
+   generator updates total). Result: critic loss stayed bounded and
+   stable (~-24 to -25, no NaN/explosion) -- strong evidence the loop
+   mechanics (gradient penalty, loss signs, update ratio) were
+   implemented correctly. Generator loss and the Wasserstein estimate
+   both moved in the "wrong" direction over these 10 epochs, but this
+   was expected: with 5 critic updates per 1 generator update, the
+   critic normally races ahead early before the generator has had
+   enough updates to catch up.
+
+5. Sample images showed no digit-like structure and looked unchanged
+   across epochs -- at the time interpreted as "just needs far more
+   than 780 generator updates," which published WGAN-GP results
+   support (typically thousands of updates needed).
+
+6. Decision made explicitly: rather than spend more CPU wall-clock
+   time chasing digit formation on a dataset that isn't graded,
+   treated the "no bugs, stable losses" result as sufficient
+   validation and moved to Phase B (OASIS on GPU), reasoning that any
+   remaining "does it actually converge" uncertainty would need to be
+   answered on OASIS regardless, since that's the graded target.
+
+7. Phase B: ported the architecture to 64x64 (one more up/downsampling
+   stage than the MNIST version), unconditional generation on raw
+   OASIS training images (no segmentation masks needed), with
+   in-memory data preloading applied proactively (same lesson learned
+   from an earlier UNet optimisation) and checkpoint/resume support
+   added upfront in case one job's time limit wasn't enough.
+
+8. Trained 100 epochs (~15,100 generator updates) on the full 9664-
+   image training set. Wasserstein estimate dropped sharply for the
+   first ~20 epochs (28.0 -> 3.2, looking very promising), then drifted
+   slowly upward for the remaining 80 epochs (3.2 -> 4.3), while
+   generator loss grew increasingly negative without bound.
+
+9. IMPORTANT: the saved sample images looked like near-identical
+   vertical stripe patterns across epoch 10, 50, and 100, and even in
+   the random-noise diversity check -- initially read as a serious
+   problem (no structure forming despite 15,000+ updates). Investigated
+   and found the actual cause: a genuine bug in the visualisation code,
+   not the model. After reshaping a batch of generated images into a
+   grid array, an extra `[0]` index was accidentally selecting only
+   the TOP ROW of pixels from each generated image, then broadcasting
+   that single row down across the whole tile -- producing exactly the
+   vertical-stripe artifact seen, regardless of what the generator was
+   actually producing. This explains why MNIST's earlier "no digits"
+   result was ALSO inconclusive -- same bug, same script pattern.
+
+10. Fixed the indexing bug (removed the erroneous `[0]`) and, since
+    the trained generator weights were never wrong -- only the
+    rendering of them -- wrote a small script to regenerate correct
+    sample images directly from the existing checkpoint, with NO
+    retraining needed. This ran in under 15 seconds.
+
+11. Result: the corrected images showed clearly realistic,
+    anatomically plausible brain slices with genuine diversity across
+    both the fixed-noise and random-noise grids -- different ventricle
+    shapes and sizes, different skull outlines, different brightness
+    levels, no mode collapse.
+
+12. Honest limitation identified and disclosed rather than hidden:
+    the checkpoint file was overwritten at each save rather than kept
+    per-epoch, so only the final epoch-100 generator weights survive
+    -- meaning the earlier upward drift in the Wasserstein estimate
+    (step 8) can be confirmed as harmless (final quality is good) but
+    NOT proven to have never dipped below an earlier peak, since no
+    intermediate correctly-rendered checkpoint exists to compare
+    against.
+
+
+KEY NUMBERS
+----------------------------------------------------------------------
+Phase                | Updates      | Critic loss (final) | Notes
+----------------------|--------------|----------------------|------------------
+MNIST smoke test      | ~780 gen     | -25.46               | Stable, no NaN;
+                       | updates      |                      | validated loop
+                       |              |                      | mechanics only
+OASIS full run         | ~15,100 gen  | -3.75                | Wasserstein est.
+                       | updates      |                      | dropped sharply
+                       |              |                      | then drifted up;
+                       |              |                      | final images
+                       |              |                      | confirmed good
+
+
+WHAT EACH SAVED IMAGE SHOWS
+----------------------------------------------------------------------
+loss_curves.png (OASIS run)
+  Left panel: critic loss (stable, slightly increasing in magnitude)
+  and generator loss (steadily more negative, unbounded). Right panel:
+  Wasserstein distance estimate -- sharp drop for ~20 epochs, then
+  slow rise for the remaining 80. On its own, ambiguous; only resolved
+  by actually viewing corrected images (see below).
+
+CORRECTED_fixed_epoch_100.png
+  64 brain images decoded from the SAME fixed noise vector, using the
+  corrected tiling code, at the final trained state (epoch 100).
+  Realistic skull/ventricle/tissue structure visible throughout.
+
+CORRECTED_random_samples.png
+  64 brain images from 64 DIFFERENT random noise vectors -- the direct
+  mode-collapse evidence. Clear visible diversity in ventricle shape,
+  brain outline, and brightness across all 64 samples: no collapse.
+
+
+OUTCOME
+----------------------------------------------------------------------
+Task 3 (optional hard-tier) requirements -- realistic images, training
+evidence (loss plots + generated images), mode collapse resolved --
+are met, confirmed only after finding and fixing a real visualisation
+bug that had made the actual result look far worse than it was. A
+genuine, disclosed limitation remains around checkpoint history not
+being preserved, which is presented honestly rather than hidden.
+
+
+LIKELY TUTOR QUESTIONS AND ANSWERS
+----------------------------------------------------------------------
+Q: What is a GAN, and what specifically does WGAN-GP change versus a
+   standard one?
+A: A GAN trains a generator and a discriminator/critic against each
+   other -- the generator tries to fool the critic, the critic tries
+   to catch fakes. Standard GAN loss (binary cross-entropy) can give
+   vanishing or exploding gradients depending on how confidently the
+   critic is winning, which is a major source of GAN training
+   instability. WGAN-GP instead approximates Wasserstein (Earth
+   Mover's) distance between real and fake distributions, which gives
+   smoother, more informative gradients throughout training, at the
+   cost of needing a gradient penalty term to keep the critic
+   approximately 1-Lipschitz (a mathematical requirement for the
+   Wasserstein approximation to be valid).
+
+Q: Why train the critic 5 times per generator update?
+A: The Wasserstein distance estimate is only meaningful if the critic
+   is close to optimal at each step; training it more per generator
+   update keeps it closer to that ideal throughout training. This is
+   the ratio recommended in the original WGAN-GP paper.
+
+Q: Why no BatchNorm in the critic?
+A: The gradient penalty is computed per-sample (on individual
+   interpolated images between real and fake), but BatchNorm mixes
+   statistics across the whole batch, which conflicts with that
+   per-sample computation. InstanceNorm was used instead, since it
+   normalises each sample independently.
+
+Q: What is mode collapse, and how did you check for it?
+A: Mode collapse is when the generator finds one (or very few) outputs
+   that reliably fool the critic and just produces variations of that,
+   rather than the full diversity of real data. Checked directly with
+   a grid of 64 images from 64 DIFFERENT random noise vectors --
+   genuine collapse would show up as most/all of those 64 looking
+   near-identical; ours showed clear variation in ventricle shape,
+   brain outline, and brightness across all 64.
+
+Q: Why prototype on MNIST first if it ended up being inconclusive
+   anyway?
+A: It wasn't actually inconclusive on the question it was meant to
+   answer -- it confirmed the training loop itself was numerically
+   stable (no NaN, no exploding losses), which is the thing most
+   likely to be subtly wrong in a first WGAN-GP implementation. The
+   "no digits visible" observation turned out to be caused by a
+   separate visualisation bug, discovered later, unrelated to whether
+   MNIST prototyping was a good idea.
+
+Q: Walk me through the visualisation bug you found.
+A: After generating a batch of images and reshaping them into a grid
+   layout for a combined image, the code indexed one extra dimension
+   too far -- `grid[i, j, 0]` when `grid[i, j]` was already the
+   complete 2D image. That extra index took just the top row of
+   pixels from each image, and broadcasting that single row across a
+   larger canvas block produced vertical stripes -- visually
+   consistent with what we saw regardless of epoch, since the
+   underlying bug was the same at every point in training.
+
+Q: Why didn't you retrain after finding the bug?
+A: The generator's actual learned weights were never affected by the
+   bug -- only the code that rendered them into a picture was wrong.
+   So the fix was to correct the rendering code and re-run inference
+   (a single fast forward pass) using the already-trained checkpoint,
+   rather than repeating ~35 minutes of GPU training for no reason.
+
+Q: Why does the Wasserstein estimate drift upward late in training,
+   and are you sure quality didn't get worse?
+A: The gradient penalty only enforces the critic stays approximately
+   1-Lipschitz LOCALLY, not that its absolute output scale stays
+   fixed -- so critic/generator loss magnitudes can drift over long
+   training without that drift necessarily meaning image quality is
+   degrading. We can confirm quality is good at epoch 100 (the
+   corrected final images), but we cannot rule out that an earlier
+   epoch, like 40 or 60, was actually better, because the checkpoint
+   file was overwritten at every save and no intermediate correctly-
+   rendered snapshot survived. This is an honest, acknowledged gap,
+   not something we're claiming to have verified.
+
+Q: How would you fix that limitation if asked to improve this
+   further?
+A: Save versioned checkpoints (e.g. checkpoint_epoch_010.pt,
+   checkpoint_epoch_020.pt, ...) instead of overwriting a single
+   checkpoint.pt file, so the full training trajectory could be
+   inspected and compared after the fact, not just the final state.

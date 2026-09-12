@@ -1,0 +1,260 @@
+COMP3710 LAB 2 - TASK 4.4.1: VARIATIONAL AUTOENCODER ON OASIS
+Demo prep summary
+======================================================================
+
+OVERVIEW
+----------------------------------------------------------------------
+Goal: train a VAE on OASIS brain MRI slices, visualise the learned
+latent manifold, and be able to explain every design choice.
+
+Dataset: /home/groups/comp3710/OASIS
+  - keras_png_slices_train / validate / test (9664 / 1120 / 544 images)
+  - 256x256 grayscale PNGs, uint8, single channel, pre-split by the
+    teaching team (no manual splitting needed)
+  - filenames like case_050_slice_1.nii.png -- one axial slice per
+    file, multiple slices per patient case
+
+Environment: Rangpur HPC, comp3710 partition (A100 GPUs), PyTorch,
+conda env "torch". Trained via sbatch batch jobs (not interactive
+srun), each job ~3-6 minutes wall time.
+
+
+THE STORY (CHRONOLOGICAL)
+----------------------------------------------------------------------
+1. Explored /home/groups/comp3710/OASIS to confirm folder structure,
+   file format, image size (256x256), and pixel range (uint8, 0-255)
+   before writing any code.
+
+2. Made two design decisions up front, deliberately, with tradeoffs
+   considered rather than defaulted to:
+     a. Resolution: downsized 256x256 -> 128x128 (fewer conv layers
+        needed, faster iteration, still enough anatomical detail for
+        a convincing demo).
+     b. Latent space: started with a 2D latent space specifically so
+        the manifold could be visualised as a directly-decoded image
+        grid (rather than needing a projection technique). Accepted
+        upfront that this trades away reconstruction fidelity.
+
+3. Built a conv VAE: 5-layer stride-2 conv encoder (128x128 -> 4x4x256
+   feature map) feeding two linear heads (mu, logvar); mirrored
+   transposed-conv decoder. BCE reconstruction loss + KL divergence
+   term (standard VAE loss, beta=1.0 initially). Adam optimiser,
+   lr=1e-3, batch size 128, 25 epochs.
+
+4. Ran the baseline (2D latent, beta=1.0). Loss converged cleanly,
+   train/val tracked closely (no overfitting), plateaued by ~epoch 15.
+   Manifold grid showed a real, smooth two-axis gradient (brightness
+   one direction, structure fading the other) -- proof the latent
+   space is organised, not random. But reconstructions were visibly
+   blurry, and part of the manifold grid decoded to blank/noisy
+   patches.
+
+5. Ran a controlled experiment: same everything, only beta changed
+   1.0 -> 0.5, to test whether the KL term was suppressing
+   reconstruction quality. Result: negligible difference in
+   reconstruction loss. This showed the blur wasn't a
+   regularisation-strength problem -- it was a genuine capacity
+   bottleneck from compressing a 16,384-pixel image into just 2
+   numbers. Confirmed by looking at the loss breakdown: KL was
+   consistently <0.2% of total loss in both runs, so halving it
+   had nothing meaningful to act on.
+
+6. Given that finding, reconsidered the original 2D-latent decision
+   and re-ran with a 16-dimensional latent space. Since UMAP can't be
+   inverted back into the decoder, switched visualisation strategy for
+   this run: (a) UMAP projection of real images' encoded latent
+   vectors down to 2D, as a scatter plot, and (b) direct linear
+   interpolation between pairs of real images' latent codes, decoding
+   every step, to show smooth manifold behaviour without needing an
+   invertible 2D grid.
+
+7. Result: reconstruction loss improved (~2.4% lower, and visibly
+   sharper detail/contrast). The UMAP scatter showed an unexpected
+   but explainable structure: many small disconnected curved
+   segments rather than one connected blob -- interpreted as each
+   segment being one patient's sequence of adjacent slices (locally
+   smooth), with different patients landing in separate regions
+   because inter-patient anatomical variation dominates over
+   slice-position variation within a patient.
+
+
+ITERATIONS TABLE
+----------------------------------------------------------------------
+Run name    | Latent dim | Beta | Final recon loss | Final KL | Final val loss | Epoch time
+------------|------------|------|-------------------|----------|-----------------|------------
+baseline    | 2          | 1.0  | 4163.67           | 6.33     | 4249.48         | ~6-15s
+beta_low    | 2          | 0.5  | 4167.94           | 7.33     | 4240.71         | ~5-6s
+latent16    | 16         | 1.0  | 4063.08            | 23.09    | 4180.35         | ~5-7s
+
+(All runs: 25 epochs, batch size 128, lr=1e-3, Adam, BCE+KL loss,
+128x128 input, ~9664 train / 1120 validation slices.)
+
+
+WHAT EACH SAVED IMAGE SHOWS
+----------------------------------------------------------------------
+manifold.png (baseline & beta_low runs)
+  15x15 grid, each cell = decoding one point on a regular grid across
+  the 2D latent space (z1, z2 in [-3, 3]). Rows show a smooth
+  brightness gradient; columns show structure fading from sharp brain
+  shapes (left) to faint/near-blank patches (right). The blank
+  patches are NOT a bug -- they're regions of latent space the
+  encoder never actually mapped real images to (the "aggregate
+  posterior" only covers part of the prior), so the decoder is
+  extrapolating into territory it never trained on.
+
+reconstructions.png (every run)
+  Top row = real validation images, bottom row = the VAE's
+  reconstruction of the same images. 2D-latent runs: bottom row is
+  visibly blurry, captures overall brain shape/brightness/ventricle
+  position but loses fine cortical folding detail. 16D-latent run:
+  same general pattern but noticeably sharper ventricle boundaries
+  and more visible grey-matter texture.
+
+loss_curve.png (every run)
+  Train loss (blue) and validation loss (orange) per epoch. All runs
+  show a steep initial drop then a clean plateau by ~epoch 12-15, with
+  train and val staying close together throughout -- no overfitting.
+
+umap_scatter.png (latent16 run only)
+  ~1120 real validation images encoded to their 16D latent mean, then
+  projected to 2D with UMAP for visualisation only (UMAP is not
+  invertible, so this plot cannot be decoded back into images). Shows
+  many small disconnected curved segments rather than one connected
+  cloud -- interpreted as per-patient slice trajectories (see step 7
+  above).
+
+latent_interpolation.png (latent16 run only)
+  4 rows, each a linear walk (10 steps) between two real validation
+  images' encoded latent means, every step decoded back into an
+  image. Each row shows a smooth, plausible progression with no
+  abrupt jumps or garbage mid-sequence -- this is the manifold
+  evidence for a latent space too large to grid-visualise directly.
+
+
+OUTCOME
+----------------------------------------------------------------------
+Task 1 requirement ("train the model and visualise the manifold") is
+met, with a stronger-than-minimum result: three separate runs forming
+a coherent investigative narrative (baseline -> controlled ablation
+-> informed re-design), rather than a single untested model. Final
+demo material available in both 2D-grid form (baseline/beta_low) and
+16D UMAP+interpolation form (latent16) -- can show whichever fits the
+demo flow better, or both.
+
+
+LIKELY TUTOR QUESTIONS AND ANSWERS
+----------------------------------------------------------------------
+Q: What is a VAE and how is it different from a plain autoencoder?
+A: A plain autoencoder maps each input to a single fixed code. A VAE's
+   encoder instead outputs a distribution (mean + variance) per input,
+   and a KL-divergence term in the loss pushes all these distributions
+   toward a standard normal. That regularisation is what makes the
+   latent space continuous and organised -- nearby points decode to
+   similar images, and you can sample from anywhere in it and get a
+   plausible output, which a plain autoencoder doesn't guarantee.
+
+Q: What's the reparameterisation trick and why do you need it?
+A: You can't backpropagate through a random sampling operation
+   directly. Instead of sampling z ~ N(mu, sigma^2) directly, we
+   compute z = mu + eps*std, where eps ~ N(0,1) is sampled
+   independently. This moves the randomness to a separate input
+   (eps) that doesn't need a gradient, while mu and std remain
+   differentiable functions of the network's parameters.
+
+Q: Why did you start with a 2D latent space? Isn't that very small?
+A: Yes, deliberately -- it lets the manifold be visualised directly
+   as a decoded grid of images, without needing a projection
+   technique like UMAP. It's a real tradeoff: reconstruction quality
+   suffers because so little information can be preserved through
+   such a narrow bottleneck. We treated this as a design choice to
+   explain, not a limitation to hide.
+
+Q: Why are your reconstructions blurry?
+A: Partly inherent to VAEs generally (the pixel-wise BCE/MSE loss
+   encourages averaging over plausible reconstructions), and
+   substantially worsened by the 2D bottleneck specifically -- we
+   confirmed this wasn't a KL/regularisation issue by testing
+   beta=0.5, which barely changed reconstruction loss, and by then
+   testing a 16D latent, which did meaningfully sharpen results.
+
+Q: What does the KL divergence term in the loss actually do, and why
+   was it so small compared to the reconstruction term?
+A: It penalises the encoder's output distribution for straying from a
+   standard normal, keeping the latent space compact and continuous.
+   It was small (under 0.2% of total loss) because with only 2 (or
+   16) latent dimensions, there simply isn't much room for the
+   distributions to spread out and rack up KL divergence -- this also
+   explains why changing beta had so little effect.
+
+Q: You tried beta=0.5 -- what were you testing, and what happened?
+A: Testing whether the KL term was suppressing reconstruction
+   quality. Result: reconstruction loss was essentially unchanged
+   (4163.67 -> 4167.94, actually marginally worse), which showed the
+   blur was a capacity limitation from the 2D bottleneck, not a
+   regularisation-strength problem -- ruling that out is what led us
+   to test a larger latent dimension instead of continuing to tune
+   beta.
+
+Q: Why switch to a 16-dimensional latent space, and why can't you
+   still show a decoded grid image for it?
+A: 16 dimensions gives the encoder much more room to preserve detail,
+   which is what produced the sharper reconstructions. A grid-decode
+   visualisation only works in 2D (or maybe 3D) -- you can't
+   enumerate a fine grid across 16 dimensions. So we switched to two
+   different, standard techniques for higher dimensions: UMAP
+   (visualise structure) and latent interpolation (demonstrate
+   smoothness directly through the decoder).
+
+Q: What is UMAP doing, and is it the same as your actual latent
+   space?
+A: UMAP is a nonlinear dimensionality-reduction technique that finds
+   a 2D layout preserving local neighbourhood structure from the
+   original 16D space, for visualisation purposes only. It is not
+   invertible -- you cannot take a point on the UMAP plot and decode
+   it back into an image, unlike the true latent space, which the
+   decoder can always decode. So the plot shows relative structure
+   (what's near what) but is a distortion, not a direct view, of the
+   real 16D geometry.
+
+Q: Why does the UMAP scatter show disconnected clusters instead of
+   one continuous blob?
+A: Each small curved segment likely corresponds to one patient's
+   sequence of adjacent MRI slices, since consecutive slices from the
+   same scan look similar and would encode to nearby latent points.
+   Different patients occupy separate regions because their overall
+   anatomical variation is larger than the slice-to-slice variation
+   within any one scan -- so the latent space is locally smooth but
+   globally organised by patient identity.
+
+Q: Why BCE loss instead of MSE for the reconstruction term?
+A: BCE is the standard choice from the original VAE literature and
+   treats each pixel's normalised intensity as a Bernoulli
+   probability; it's well-behaved and is what most reference VAE
+   implementations use. MSE would be a more literally accurate model
+   of continuous grayscale intensities, and is a reasonable
+   alternative, but BCE was chosen as the conventional, safe default.
+
+Q: How do you know the model isn't overfitting?
+A: Training and validation loss track closely together throughout all
+   three runs, with no divergence between them -- if the model were
+   overfitting, validation loss would start rising while training
+   loss kept falling, which doesn't happen here.
+
+Q: Why 128x128 instead of the original 256x256 resolution?
+A: Reduces the number of downsampling conv layers needed (5 instead
+   of ~6), speeding up both training and iteration during
+   development, while retaining enough detail for the manifold and
+   reconstruction demonstrations to be convincing. A deliberate
+   speed/fidelity tradeoff, consistent with also choosing a small
+   latent space.
+
+Q: What would happen with an even larger latent dimension, e.g. 64
+   or 128?
+A: Likely continued improvement in reconstruction quality, since more
+   capacity is available, but with diminishing returns, and the KL
+   term would need to do more real regularising work to keep such a
+   large space from just becoming an unconstrained autoencoder
+   (i.e. risk of the model ignoring the "variational" constraint
+   entirely, sometimes called posterior collapse in the other
+   direction). We stopped at 16 rather than testing this, as a
+   deliberate scope decision once the story was strong enough.
