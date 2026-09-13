@@ -54,6 +54,46 @@ plt.tight_layout()
 plt.savefig("square_wave_reconstruction.png")
 print("Saved square_wave_reconstruction.png")
 
+# ---- Additional demonstration: higher-order harmonics (N=20, 50) ----
+fig2 = plt.figure(figsize=(14, 5))
+for i, Nh in enumerate([20, 50], start=1):
+    y = square_wave_fourier_torch(t_plot, f0, Nh)
+    plt.subplot(1, 2, i)
+    plt.plot(t_plot.cpu().numpy(), y.cpu().numpy(), label=f"N={Nh} harmonics")
+    plt.plot(t_plot.cpu().numpy(), square.cpu().numpy(), 'k--', alpha=0.5, label="Square wave")
+    plt.title(f"Fourier Approximation, N={Nh}")
+    plt.ylim(-1.5, 1.5)
+    plt.grid(True)
+    plt.legend()
+plt.tight_layout()
+plt.savefig("square_wave_higher_harmonics.png")
+print("Saved square_wave_higher_harmonics.png")
+
+# ---- Decompose the constructed square wave back into harmonics via DFT ----
+N_dft = 2048
+t_dft = (torch.arange(N_dft, device=device, dtype=torch.float64) / N_dft) * T
+signal_50 = square_wave_fourier_torch(t_dft, f0, 50)
+
+fft_result = torch.fft.fft(signal_50.to(torch.complex128))
+freqs = torch.fft.fftfreq(N_dft, d=(T / N_dft))
+magnitude = (2.0 / N_dft) * torch.abs(fft_result)
+
+half = N_dft // 2
+freqs_pos = freqs[:half].cpu().numpy()
+magnitude_pos = magnitude[:half].cpu().numpy()
+
+plt.figure(figsize=(12, 5))
+plt.stem(freqs_pos, magnitude_pos, basefmt=" ")
+plt.title("DFT of the Constructed Square Wave (50 harmonics) - Magnitude Spectrum")
+plt.xlabel("Frequency (Hz)")
+plt.ylabel("Magnitude")
+plt.xlim(0, 20)
+plt.grid(True)
+for k in range(1, 20, 2):
+    plt.axvline(k, color='r', linestyle='--', alpha=0.4)
+plt.savefig("dft_decomposition_verification.png")
+print("Saved dft_decomposition_verification.png")
+
 # ---- Timing comparison: CPU naive DFT vs GPU naive DFT vs NumPy FFT ----
 def naive_dft_numpy(x):
     N = len(x)

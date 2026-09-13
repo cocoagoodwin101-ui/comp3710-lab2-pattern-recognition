@@ -1,34 +1,134 @@
-Part 1:
-N=  256  GPU naive DFT: 1.276352s   NumPy FFT: 0.077221s   CPU naive DFT: 0.063703s #GPU warm up/cold-start overhead
+Part 1: DFT / Fourier Reconstruction - Notes
+======================================================================
+
+TIMING RESULTS
+----------------------------------------------------------------------
+N=  256  GPU naive DFT: 1.276352s   NumPy FFT: 0.077221s   CPU naive DFT: 0.063703s   #GPU warm up/cold-start overhead
 N= 1024  GPU naive DFT: 0.000625s   NumPy FFT: 0.000057s   CPU naive DFT: 1.043676s
 N= 4096  GPU naive DFT: 0.050381s   NumPy FFT: 0.000195s   CPU naive DFT: skipped
+N= 8192  GPU naive DFT: 0.005152s   NumPy FFT: 0.000319s   CPU naive DFT: skipped
+N=16384  GPU naive DFT: 0.020247s   NumPy FFT: 0.000566s   CPU naive DFT: skipped
+N=32768  GPU naive DFT: 0.467090s   NumPy FFT: 0.001462s   CPU naive DFT: skipped
 
-The very first CUDA operation in any script pays a one-time tax: 
-creating the CUDA context, initialising the memory allocator, 
-and JIT-compiling the kernels for operations like complex exp()
-and complex matmul. That overhead is fixed regardless of problem size,
-so for a tiny N=256 problem, the actual computation is microseconds 
-but the setup tax is over a second.
+Skipped the CPU brute-force loop past N=1024 because the trend was
+already unambiguous (CPU dramatically slower than both GPU and FFT at
+N<=1024), and running it at N=32,768 would cost significant real time
+for a result that was already predictable from the smaller sizes.
 
-N	GPU naive DFT	NumPy FFT	Ratio (GPU/FFT)
-256	    0.064s	    0.0047s	    ~14× slower
-1024	0.00065s	0.000056s	~12× slower
-4096	0.0015s	    0.00021s	~7× slower
-8192	0.0049s	    0.00029s	~17× slower
-16384	0.019s	    0.00053s	~35× slower
-32768	0.462s	    0.0013s	    ~340× slower
+The very first CUDA operation in any script pays a one-time tax:
+creating the CUDA context, initialising the memory allocator, and
+JIT-compiling the kernels for operations like complex exp() and complex
+matmul. That overhead is fixed regardless of problem size, so for a
+tiny N=256 problem, the actual computation is microseconds but the
+setup tax is over a second -- this is why the very first GPU timing
+in a run looks disproportionately slow compared to later, "warmed up"
+runs at similar or even larger N.
 
-Image: 
-Square wave reconstruction
-N=1 (just the fundamental) is a smooth sine wave, barely resembling a square wave yet — makes sense, since it's literally just one sinusoid.
+Cleaner summary table (post warm-up numbers, consistent run):
 
-N=3 and N=5 progressively sharpen toward the square edges, adding more oscillation detail in the flat regions — each added odd harmonic contributes higher-frequency correction terms that push the approximation closer to the sharp transitions.
+N       GPU naive DFT   NumPy FFT    Ratio (GPU/FFT)
+256     0.064s          0.0047s      ~14x slower
+1024    0.00065s        0.000056s    ~12x slower
+4096    0.0015s         0.00021s     ~7x slower
+8192    0.0049s         0.00029s     ~17x slower
+16384   0.019s          0.00053s     ~35x slower
+32768   0.462s          0.0013s      ~340x slower
 
-The Gibbs phenomenon is clearly visible in both N=3 and N=5: right at 
-the jump discontinuities (t=0, 0.5, 1.0), the reconstruction overshoots 
-past ±1.0 before settling — that little "spike" poking above 1.0 and 
-below -1.0 right at the edges.Adding more harmonics does not shrink 
-that overshoot, it just squeezes the ringing into a narrower 
-region closer to the discontinuity. If you look closely, N=5's 
-overshoot peak is roughly the same height as N=3's, just compressed 
-into less horizontal space.
+FFT wins at every size tested, and the gap widens as N grows. Reason:
+FFT is O(N log N) while the naive DFT (even parallelised on a GPU) is
+O(N^2). As N grows, the naive DFT's total amount of work grows
+quadratically, which eventually outpaces what raw GPU parallelism
+alone can compensate for within this tested range. The naive DFT is
+reframed as a single N x N matrix-vector multiply (W @ x, where W is
+the matrix of DFT complex exponentials) specifically so the GPU can
+parallelise it as a dense matmul -- this is a real speedup over a naive
+CPU double-loop, but it doesn't change the underlying O(N^2) algorithmic
+complexity, which is why FFT still wins overall.
+
+
+IMAGE 1: SQUARE WAVE RECONSTRUCTION (N=1, N=3, N=5)
+----------------------------------------------------------------------
+N=1 (just the fundamental) is a smooth sine wave, barely resembling a
+square wave yet -- makes sense, since it's literally just one sinusoid.
+
+N=3 and N=5 progressively sharpen toward the square edges, adding more
+oscillation detail in the flat regions -- each added odd harmonic
+contributes higher-frequency correction terms that push the
+approximation closer to the sharp transitions.
+
+The Gibbs phenomenon is clearly visible in both N=3 and N=5: right at
+the jump discontinuities (t=0, 0.5, 1.0), the reconstruction overshoots
+past +/-1.0 before settling -- that little "spike" poking above 1.0 and
+below -1.0 right at the edges. Adding more harmonics does not shrink
+that overshoot, it just squeezes the ringing into a narrower region
+closer to the discontinuity. If you look closely, N=5's overshoot peak
+is roughly the same height as N=3's, just compressed into less
+horizontal space.
+
+
+IMAGE 2: HIGHER-ORDER HARMONICS (N=20, N=50)
+----------------------------------------------------------------------
+Added to directly answer the lab sheet's question: "How do these
+additional components influence the accuracy and sharpness of the
+square wave?"
+
+Comparing N=20 against N=50 side by side:
+
+- In the FLAT regions (away from the discontinuities), accuracy
+  improves substantially as harmonic count increases -- N=50's flat
+  sections sit almost exactly on +1.0 and -1.0, with much smaller
+  ripple amplitude than N=20, which itself is far smoother than the
+  earlier N=3/N=5 plots.
+
+- At the DISCONTINUITIES (t=0, 0.5, 1.0), the overshoot spike is
+  essentially unchanged in height between N=20 and N=50 (both peak at
+  roughly ~1.18-1.20) -- only its width shrinks, compressing closer to
+  the jump as N increases.
+
+CONCLUSION / ANSWER TO THE LAB SHEET QUESTION:
+More harmonics improve accuracy and sharpness everywhere EXCEPT at the
+discontinuities themselves. Away from jumps, the approximation
+converges towards the true square wave as N increases. But right at
+each discontinuity, a fixed-height overshoot (the Gibbs phenomenon)
+persists no matter how many harmonics are added -- it is a genuine,
+unavoidable mathematical property of using a finite Fourier series to
+approximate a discontinuous function, not a bug or a sign of an
+insufficient number of terms. Adding more harmonics only ever
+compresses the width of the overshoot region, never its height.
+
+
+IMAGE 3: DFT DECOMPOSITION VERIFICATION (RECOVERING THE HARMONICS)
+----------------------------------------------------------------------
+Added to demonstrate decomposing the constructed square wave BACK into
+its harmonic components using the DFT algorithm, as required by the
+lab sheet.
+
+Method: built the square wave signal using 50 harmonics (as before),
+then ran torch.fft.fft on that constructed signal and plotted the
+resulting magnitude spectrum as a stem plot, with red dashed reference
+lines marking the odd harmonic frequencies (1, 3, 5, 7, ... Hz) that
+were actually used to construct the signal.
+
+Result: the DFT produces sharp, isolated peaks EXACTLY at every odd
+harmonic frequency (1, 3, 5, 7, 9, 11, 13, 15, 17, 19 Hz), landing
+precisely on the red reference lines. Magnitude at every even harmonic
+(2, 4, 6, 8 Hz etc.) is effectively zero. Peak magnitudes decay
+roughly as 1/n moving up the harmonic series (e.g. ~1.27 at 1 Hz,
+~0.43 at 3 Hz, ~0.25 at 5 Hz), consistent with the 4/(pi*n) coefficient
+in the underlying Fourier series formula.
+
+CONCLUSION: this confirms the DFT correctly recovered exactly the set
+of frequency components (only odd harmonics, in the correct relative
+proportions) that were used to build the signal in the first place --
+i.e. the forward construction (Fourier series -> time-domain signal)
+and the DFT decomposition (time-domain signal -> frequency spectrum)
+are verified as consistent, inverse operations of one another.
+
+Do you notice any differences, and if so, why might they occur? Any
+tiny non-zero magnitude visible at even harmonics (rather than exactly
+0) is floating-point numerical noise from the FFT computation, not a
+genuine signal component -- because the signal duration (T=1.0s) and
+sampling were set up so the DFT's frequency bins land exactly on
+integer Hz values, there is no spectral leakage, so any residual is
+attributable purely to finite floating-point precision rather than a
+real discrepancy between construction and decomposition.
