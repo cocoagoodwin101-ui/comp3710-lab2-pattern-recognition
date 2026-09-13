@@ -103,10 +103,33 @@ also clearly shows the Gibbs phenomenon: adding more harmonics sharpens
 the approximation but never removes the fixed-height overshoot at the
 signal's discontinuities, just compresses it closer to the edge.
 
-**Key files:** `comp3710_lab2.py` (square wave, Fourier reconstruction,
-naive DFT, timing sweep), `job.sh`.
+Two further demonstrations were added to directly answer the lab
+sheet's remaining questions:
 
-**Results:** see `part1_dft/results/` — `square_wave_reconstruction.png`.
+- **Higher-order harmonics (N=20, N=50):** away from the
+  discontinuities, accuracy improves substantially as harmonic count
+  increases — the flat regions converge tightly to ±1.0. At the
+  discontinuities themselves, the Gibbs overshoot persists at roughly
+  the same fixed height (~1.18–1.20) regardless of N, only compressing
+  in width — confirming more harmonics improve sharpness everywhere
+  except exactly at the jumps, where the overshoot is a genuine,
+  unavoidable property of finite Fourier series approximating a
+  discontinuous function.
+- **DFT decomposition verification:** the constructed 50-harmonic
+  square wave was passed through `torch.fft.fft` and its magnitude
+  spectrum plotted. The result shows sharp peaks exactly at every odd
+  harmonic (1, 3, 5, ... 19 Hz) with magnitude decaying ~1/n, and
+  effectively zero magnitude at even harmonics — confirming the DFT
+  correctly recovers precisely the frequency components used to
+  construct the signal, verifying the forward (series → signal) and
+  inverse (signal → spectrum) operations are consistent.
+
+**Key files:** `comp3710_lab2.py` (square wave, Fourier reconstruction,
+higher-harmonic demonstration, DFT decomposition verification, naive
+DFT, timing sweep), `job.sh`.
+
+**Results:** see `part1_dft/results/` — `square_wave_reconstruction.png`,
+`square_wave_higher_harmonics.png`, `dft_decomposition_verification.png`.
 
 ---
 
