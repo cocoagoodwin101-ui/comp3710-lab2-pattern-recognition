@@ -2,23 +2,6 @@ COMP3710 LAB 2 - TASK 4.4.1: VARIATIONAL AUTOENCODER ON OASIS
 Demo prep summary
 ======================================================================
 
-OVERVIEW
-----------------------------------------------------------------------
-Goal: train a VAE on OASIS brain MRI slices, visualise the learned
-latent manifold, and be able to explain every design choice.
-
-Dataset: /home/groups/comp3710/OASIS
-  - keras_png_slices_train / validate / test (9664 / 1120 / 544 images)
-  - 256x256 grayscale PNGs, uint8, single channel, pre-split by the
-    teaching team (no manual splitting needed)
-  - filenames like case_050_slice_1.nii.png -- one axial slice per
-    file, multiple slices per patient case
-
-Environment: Rangpur HPC, comp3710 partition (A100 GPUs), PyTorch,
-conda env "torch". Trained via sbatch batch jobs (not interactive
-srun), each job ~3-6 minutes wall time.
-
-
 THE STORY (CHRONOLOGICAL)
 ----------------------------------------------------------------------
 1. Explored /home/groups/comp3710/OASIS to confirm folder structure,
@@ -258,3 +241,141 @@ A: Likely continued improvement in reconstruction quality, since more
    entirely, sometimes called posterior collapse in the other
    direction). We stopped at 16 rather than testing this, as a
    deliberate scope decision once the story was strong enough.
+
+VAE Pipeline diagram:
+What's actually happening, step by step
+
+Input scan → numbers. A brain MRI slice is just a grid of pixels — for us, 128×128 of them, 
+each one a number between 0 and 1 representing brightness (0 = black, 1 = white). 
+That's all a computer ever sees: a big grid of numbers, no different in kind from a spreadsheet.
+
+Encoder (the shrinking purple wedge). This is a series of layers, each one taking the 
+grid and shrinking it: 128→64→32→16→8→4. Each layer looks at small neighborhoods of 
+pixels and decides what's worth keeping — edges, shapes, brightness patterns — throwing 
+away raw detail and keeping only "the important stuff." By the time it's down to 4×4, 
+it's squeezed all of that down into a tiny handful of numbers.
+
+The bottleneck (z, the amber box) — this is "the latent space." For our simplest VAE, 
+this is literally just 2 numbers. That's it. Those 2 numbers are the entire "summary" 
+of the brain scan as far as the network is concerned — think of it like a massively 
+compressed zip file of the image, except instead of being an exact compression, it's a 
+learned one that only knows how to summarize brains in ways useful for rebuilding brain-like images.
+
+Decoder (the growing purple wedge, mirror image of the encoder). Takes those 2 numbers and 
+does the reverse: 4→8→16→32→64→128, each layer guessing "given this summary, what would the 
+more detailed version look like?" It's not literally undoing the encoder's exact steps — it's 
+a separate network that's learned to turn small numbers into plausible brain images.
+
+Output scan. A new 128×128 grid of numbers — hopefully looking like the original input, 
+since that's the target we're training toward.
+
+What makes it "good" — the loss function
+
+Training means adjusting both networks (encoder and decoder together) to minimize a score called 
+the loss — lower is better, and "training" is just repeatedly nudging the network to make that 
+score go down. Our loss has two parts added together:
+
+Reconstruction loss — literally "how different is the output image from the input image, pixel by pixel." 
+This is the obvious one: did it actually rebuild the brain scan correctly?
+KL divergence — this is the confusing one, so here's the plain version: instead of just spitting 
+out a single pair of numbers for z, the encoder actually outputs a small range of plausible values 
+(a "cloud" around a center point). KL divergence measures how far that cloud is from a plain, boring, 
+centered-at-zero bell curve. We penalize the network for making that cloud too weird or spread out — 
+this keeps the space of all possible z values well-organized and predictable, rather than the network 
+scattering encoded brains randomly all over the place.
+
+We minimize the sum of both, not just one. If we only minimized reconstruction, we'd get a great 
+img-copier but a chaotic, useless latent space. If we only minimized KL, we'd get a beautifully organized 
+latent space that doesn't actually encode anything useful about brains. Both together is the point of "variational" autoencoder.
+
+Encoder/decoder Layers:
+the downsampling is built directly into the convolution itself, via stride=2. 
+Every single Conv2d(..., stride=2) layer both extracts features and halves the spatial size 
+in one operation. 
+
+So the accurate one-line description: the encoder is a stack of 5 strided convolutions 
+(no pooling), each followed by ReLU; the decoder is the mirror image using transposed convolutions 
+to upsample instead of downsample.
+
+
+loss_curve.png -> plot_loss_curve() ->	Train loss and validation loss (reconstruction + KL added 
+together, averaged per image) at every epoch. Same function runs for every experiment — 
+this one is from the β=1.0, 2D-latent baseline run.
+
+reconstructions.png -> plot_reconstructions() -> 8 real validation brain slices (top row) 
+next to what the model produced when it encoded then immediately decoded those same images (bottom row). 
+This is the 2D latent run — hence the noticeable blur.
+
+reconstructions_16d.png	-> Identical process, but from the 16-dimensional latent run — 
+sharper, because 16 numbers preserve more detail than 2.
+
+manifold.png -> plot_manifold() -> Only ran because LATENT_DIM == 2. A 15×15 grid where 
+every single cell is a real decoder output — for each grid position, it builds a 
+z = [x, y] pair by hand (no encoding involved at all) and asks the decoder "what would this made-up code look like as a brain?"
+
+umap_scatter.png -> plot_umap_scatter() -> Only ran because LATENT_DIM == 16. 
+Takes up to 1500 real validation images, runs them through the encoder only (not the decoder) 
+to get their 16-number mu, then uses UMAP to compress those 16 numbers into 2 
+just for plotting. Each dot = one real brain slice's position.
+
+latent_interpolation.png -> plot_latent_interpolation() -> Only ran because LATENT_DIM == 16. 
+Takes 4 pairs of real images (8 total), encodes each to get its real 16-number mu, and for each 
+pair walks smoothly from one code to the other in 10 steps — decoding every single step 
+through the real decoder. Unlike the UMAP plot, this one does produce real images at every 
+point, because it never leaves the true 16-dimensional latent space.
+
+Explain UMAP:
+UMAP looks at all my 16-number brain codes and asks: which ones are most similar to each other?
+Then it draws a 2D map where similar codes end up near each other and different codes end up far apart — 
+basically an automatic way of drawing a 'map of similarity' for data you can't directly visualize because it has too many numbers.
+
+UMAP first builds a kind of neighbor graph in the original 16-dimensional space — for every point, 
+it figures out which other points are its closest neighbors. Then it searches for a 2D arrangement of 
+points that preserves those same neighbor relationships as closely as possible, using an optimization process. 
+It's a nonlinear technique — unlike a simple straight-line projection (like PCA), it can bend and warp the layout 
+to preserve those local relationships better.
+
+UMAP is a one-way, visualization-only operation. You can go from 16 numbers → 2 numbers for plotting, 
+but there's no way back from that 2D dot to a real image — which is exactly why you also needed the separate 
+interpolation technique to prove the decoder produces sensible images, since UMAP itself can never do that.
+
+
+
+Increasing latent dimensionality does decrease reconstruction loss, but with real trade-offs:
+Does it decrease reconstruction loss?
+Yes, generally — up to a point. Our own numbers show it directly: 2D → 4163.67, 16D → 4063.08 (~2.4% lower). 
+But two things worth knowing for the demo:
+
+This isn't unlimited. It has diminishing returns — going from 2→16 (8× more numbers) only bought 2.4%. 
+It wouldn't keep improving linearly forever; eventually you'd hit a point where adding more latent numbers 
+barely helps, because you've already captured essentially all the meaningful variation that exists across real brain slices.
+A 2.4% numeric improvement translated into a visibly much sharper image: BCE loss summed over all 16,384 pixels is 
+dominated by getting the large, easy regions right (background, overall brain shape), which both models already did well. 
+The visible improvement — ventricle sharpness, grey matter texture — comes from a relatively small number of 
+pixels, so it shows up as a small percentage change in the loss number while being a large perceptual difference. 
+Good to know so you don't undersell the 16D result just because the number looks unremarkable.
+
+Why: the latent code is the only channel through which information can pass from encoder to decoder — 
+everything the decoder knows about the original image, it has to reconstruct from just those numbers. 
+A 128×128 image has 16,384 independent pixel values. Squeezing that down to 2 numbers forces the encoder to 
+throw away almost everything except the very coarsest signal (which is exactly what we saw: brightness and a rough fade). 
+Squeezing it down to 16 numbers instead gives the encoder roughly 8× more "channels" to preserve independent 
+axes of variation — ventricle shape, asymmetry, local texture — directly reducing how much distinguishing detail 
+has to be discarded before the decoder ever sees it.
+
+Test: The β ablation (β=1.0 vs β=0.5) showed almost no change in reconstruction quality, which ruled out 
+"the KL regularization is too strong" as the explanation for the 2D blur. That left latent capacity as the 
+only remaining explanation — and the 16D run confirming a real improvement
+The trade-off:
+Two distinct costs for that gain, both worth naming:
+1. Visualizability: A 2D latent space can be grid-decoded and looked at directly; anything above that 
+needs an indirect, imperfect substitute (UMAP for structure, interpolation for smoothness)
+2. Compression: a VAE's whole point is often to find a compact summary of the data. This is a classic 
+rate-distortion trade-off from information theory: allow more "rate" (more latent numbers) and you get 
+less "distortion" (lower reconstruction error), but you've given up some of the compression that made the 
+representation useful as a compact summary in the first place. If the actual downstream goal were, say, 
+using the latent code for anomaly detection or compact storage, an unnecessarily large latent space 
+would be working against that goal even while producing objectively cleaner reconstructions.
+
+we never actually tested whether the 16D latent space, when sampled with brand new random 
+noise still produces sensible brains
