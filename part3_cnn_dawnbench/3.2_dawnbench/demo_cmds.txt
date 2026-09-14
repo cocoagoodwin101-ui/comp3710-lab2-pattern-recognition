@@ -12,10 +12,6 @@ demonstration." lab2_part3.2_demo.py loads the already-trained weights
   2. Runs inference on a small batch of test images with visible
      correct/incorrect predictions printed
 
-This is DELIBERATELY separate from the main training script, so there
-is zero risk of accidentally re-triggering a multi-minute full training
-run in front of the demonstrator.
-
 
 BEFORE THE DEMO (do this once, in advance, not live)
 ----------------------------------------------------------------------
