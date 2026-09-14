@@ -75,3 +75,66 @@ started degrading past epoch 30 — training longer help? loss curve
 alone doesn't tell me — 
 I'd want a validation loss tracked in parallel to check for that 
 divergence
+
+Does the filter go over individual pixels or regions? Regions — that's the whole 
+point of a convolution kernel. A 3×3 filter looks at a 3×3 block of pixels at once 
+(9 values), multiplies each by a learned weight, sums them into one number, 
+then slides over by one pixel and repeats. That highlighted amber square in the 
+diagram is one such 3×3 region; it produces exactly one value in the feature map 
+(the amber cell on the right). The filter slides across every possible position in 
+the image, building up the full feature map one region at a time — never looking at 
+a single isolated pixel in isolation.
+
+Does the CNN involve backpropagation, or just updating weights? Both, and they're 
+not separate things — they're two halves of the same step. Forward pass: input flows 
+through conv → pool → conv → pool → dense → output, producing a prediction. Loss: compare 
+prediction to the true label. Backpropagation: the chain rule is applied backward through 
+every layer to compute how much each individual weight contributed to the error — this is 
+what loss.backward() actually does in your code. Weight update: the optimizer (Adam) then 
+nudges every weight slightly in the direction that reduces that error, using the gradients 
+backprop just computed. So backprop is the calculation step, and weight-updating is the action 
+taken using that calculation — you can't update weights meaningfully without backprop telling 
+you which direction to move them.
+
+What are dense layers and what do they do? "Dense" (also called fully-connected) means every 
+input neuron connects to every output neuron, each with its own learned weight — unlike 
+convolution, which only looks at small local regions. After the conv/pool layers extract 
+spatial features and get flattened into one long vector, the dense layers take that whole 
+vector as input and learn to combine features globally to make a final decision. In your 
+architecture, Dense 128 learns to combine extracted features into a compressed representation, 
+and Dense (7) maps that down to one score per identity class — the actual classification 
+decision happens here, not in the conv layers.
+
+What is the Adam optimiser and what does it do? Adam decides how to update each weight 
+once backprop has computed the gradients. Instead of moving every weight by the same fixed 
+step size, Adam keeps a running average of each weight's recent gradient history and adapts 
+the step size per weight — parameters with consistently large gradients get smaller, more 
+cautious steps, while ones with small or noisy gradients get relatively larger steps. This 
+adaptivity is why Adam tends to converge quickly and reliably without much manual tuning, which 
+is exactly why it was the natural choice for Part 3.1's fairly straightforward classification 
+task (versus Part 3.2's DAWNBench challenge, where you deliberately used SGD instead, because 
+it reaches a higher final accuracy ceiling on CNN vision tasks even though it needs more careful tuning).
+
+Why introduce pooling at all? Three real reasons, not just "to make it smaller": 
+(1) Computational efficiency — halving spatial dimensions after each pool dramatically 
+cuts the number of computations needed in every following layer. 
+(2) Controlling overfitting — fewer parameters downstream means less capacity to simply 
+memorise training images. 
+(3) Building spatial invariance — max-pooling keeps only the strongest activation 
+in each small region, so the network becomes somewhat tolerant to a feature shifting 
+by a pixel or two (an eye detected slightly left or right of where it was in training still 
+triggers the same pooled response). Without pooling, the network would need 
+vastly more parameters and be far more sensitive to exact pixel positioning.
+
+What ReLU does: ReLU (Rectified Linear Unit) is dead simple: 
+f(x)=max(0,x) — if a value is positive, pass it through unchanged; if it's negative, set it to zero. 
+It's applied after every conv layer and dense layer (except the very last one). Two reasons it matters:
+1. Non-linearity. Without it, stacking conv layers would be mathematically equivalent to 
+just one bigger linear layer — no matter how many layers you stack, a chain of purely linear 
+operations collapses into a single linear operation. ReLU breaks that by introducing a non-linear "kink," 
+which is what actually lets the network learn complex, curved decision boundaries rather than only 
+straight-line separations between classes. This directly connects to the "linear decomposition" distinction 
+from Part 2 — PCA is stuck being linear, and ReLU is precisely the ingredient that lets a CNN not be.
+2. Sparsity/efficiency. Zeroing out negative activations means only some neurons "fire" for any 
+given input, which tends to make learned features cleaner and more distinct, and it's computationally 
+trivial compared to alternatives like sigmoid.
