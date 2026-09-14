@@ -226,3 +226,46 @@ A: infer_unet.py imports classes and constants from train_unet.py,
    example of a bug that only shows up when code gets reused across
    files, and of testing that reuse path rather than assuming each
    script works in isolation forever.
+
+
+UNET Architecture Diagram image:
+Purple boxes (left column) = encoder, flowing downward. 
+Teal boxes (right column) = decoder, flowing upward. 
+Amber box = the bottleneck, the most compressed point.
+Plain solid arrows going down the left column = MaxPool2d — this is a genuine, 
+important difference from the VAE: UNet downsamples with explicit pooling layers, not strided convolutions. 
+The VAE's encoder baked downsampling into the conv itself (stride=2); UNet instead does a normal Conv2d (no stride) 
+inside DoubleConv, then a separate MaxPool2d(2) layer shrinks it afterward. 
+Plain solid arrows going up the right column = ConvTranspose2d — same tool the VAE's decoder used for upsampling. 
+This one is consistent between the two models.
+Dashed coral arrows crossing the middle = the skip connections — encoder features concatenated directly 
+into the matching decoder stage, which is why every decoder box's channel count is a sum (e.g. 512+256, not just 512) — 
+that's the bottleneck's upsampled output plus the encoder's original features at that resolution, stacked together.
+
+
+Why DSC???
+background pixels vastly outnumber CSF/grey/white matter in any slice. A model that just predicted 
+"background everywhere" would still score very high on plain pixel accuracy — but DSC punishes that 
+immediately: for any class with real pixels in the ground truth but zero predicted pixels, intersection = 0, 
+so that class's DSC is exactly 0, regardless of how small that class is. It forces the model to actually 
+get every class right, not just the easy dominant one — which is exactly why the lab's requirement is per-class DSC, 
+not one blended number.
+
+
+Categorical, One-Hot Encoding:
+Categorical / one-hot output — exact code
+
+Two separate things go by similar names here — worth being precise about both:
+
+1. The model's output layer is "categorical" by construction:
+self.out_conv = nn.Conv2d(base, num_classes, 1)
+This produces a tensor shaped [batch, 4, H, W] — four separate channels, one per class, at every pixel 
+— rather than one channel holding a single number like "2" for grey matter. That's what "categorical output" 
+means architecturally: the network natively speaks in per-class scores, not a single class-ID number.
+
+2. One-hot encoding converts the ground truth into that same shape, so it can be compared:
+targets_onehot = F.one_hot(targets, num_classes).permute(0, 3, 1, 2).float()
+The ground truth mask starts as plain integers (0,1,2,3), shape [batch, H, W]. F.one_hot(targets, 4) 
+expands that into [batch, H, W, 4] — a 1 in the position matching that pixel's true class, 0 elsewhere.
+ .permute(0, 3, 1, 2) just reorders the dimensions to PyTorch's expected channel-first layout [batch, 4, H, W], 
+ matching the model's own output shape exactly, which is what lets the Dice calculation multiply/add them together directly.

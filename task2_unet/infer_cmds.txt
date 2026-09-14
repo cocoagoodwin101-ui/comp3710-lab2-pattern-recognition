@@ -1,0 +1,69 @@
+COMP3710 LAB 2 - TASK 2 (UNET) INFERENCE COMMANDS
+======================================================================
+
+
+PUSH FILES TO RANGPUR (only needed once, or after any edit)
+----------------------------------------------------------------------
+From a LOCAL (non-SSH'd) PowerShell window:
+
+scp "C:\Users\charl\OneDrive\COMP3710\Lab2\task2_unet\evaluate_test_set.py" s4883100@rangpur.compute.eait.uq.edu.au:~/comp3710_lab2/
+scp "C:\Users\charl\OneDrive\COMP3710\Lab2\task2_unet\job_evaluate_test.sh" s4883100@rangpur.compute.eait.uq.edu.au:~/comp3710_lab2/
+
+
+A) LIVE SINGLE-SLICE INFERENCE
+----------------------------------------------------------------------
+On Rangpur:
+
+cd ~/comp3710_lab2
+sbatch job_unet_infer.sh --run_name unet_baseline --checkpoint unet_best.pt
+squeue --me
+
+# once finished:
+cat unet_infer_<jobid>.out
+
+# to run it again on a SPECIFIC named slice instead of a random one:
+sbatch job_unet_infer.sh --run_name unet_baseline --checkpoint unet_best.pt --slice case_453_slice_8.nii.png
+
+Pull the result image DIRECTLY into the repo's results folder
+(local PowerShell):
+cd "C:\Users\charl\OneDrive\COMP3710\Lab2\task2_unet\results"
+scp s4883100@rangpur.compute.eait.uq.edu.au:~/comp3710_lab2/outputs/unet_baseline/live_inference.png .
+
+
+B) FULL TEST-SET EVALUATION (all test slices, aggregate DSC)
+----------------------------------------------------------------------
+On Rangpur:
+
+cd ~/comp3710_lab2
+sbatch job_evaluate_test.sh --run_name unet_baseline --checkpoint unet_best.pt
+squeue --me
+
+# once finished:
+cat unet_testeval_<jobid>.out
+
+This prints per-class DSC averaged across the ENTIRE test set (544
+slices, per the earlier folder listing), same PASS/FAIL format as
+training used - this is the number to quote if asked "what's your
+model's overall test-set performance," distinct from the single-slice
+demo number.
+
+This script only prints text, it doesn't save a file on its own -
+persist it as a real evidence file before it's lost to a Slurm log
+rotation:
+
+cat unet_testeval_<jobid>.out > ~/comp3710_lab2/outputs/unet_baseline/test_set_dsc.txt
+
+Pull that file DIRECTLY into the repo's results folder too
+(local PowerShell):
+cd "C:\Users\charl\OneDrive\COMP3710\Lab2\task2_unet\results"
+scp s4883100@rangpur.compute.eait.uq.edu.au:~/comp3710_lab2/outputs/unet_baseline/test_set_dsc.txt .
+
+
+WHAT TO SAY IN THE DEMO
+----------------------------------------------------------------------
+"I have two pieces of inference evidence: a live single-slice run
+[option A] that segments one held-out test image on the spot, proving
+the model works outside training, and an aggregate evaluation across
+the full test set [option B] confirming the per-class DSC numbers hold
+up at scale, not just on training/validation data or one cherry-picked
+example."

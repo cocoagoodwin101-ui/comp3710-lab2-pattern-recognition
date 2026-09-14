@@ -1,0 +1,13 @@
+Job 590626 on a100-9, started Tue Sep 15 09:52:56 AEST 2026
+Device: cuda
+Loading checkpoint: /home/Student/s4883100/comp3710_lab2/outputs/unet_baseline/unet_best.pt
+Preloading 544 image/mask pairs from /home/groups/comp3710/OASIS/keras_png_slices_test ...
+Preload done in 1.2s
+Test slices: 544
+
+Full TEST SET per-class DSC (544 slices, all of them):
+  background     : 0.9993  [PASS, threshold 0.9]
+  CSF            : 0.9573  [PASS, threshold 0.9]
+  grey_matter    : 0.9653  [PASS, threshold 0.9]
+  white_matter   : 0.9791  [PASS, threshold 0.9]
+Job finished Tue Sep 15 09:53:06 AEST 2026

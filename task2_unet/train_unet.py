@@ -63,13 +63,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 IMG_SIZE = 256
 NUM_CLASSES = 4
-CLASS_NAMES = ["background", "CSF", "grey_matter", "white_matter"]  # standard
-                                                                     # OASIS 4-class
-                                                                     # convention;
-                                                                     # verify against
-                                                                     # dataset docs if
-                                                                     # precise anatomical
-                                                                     # labelling is asked
+CLASS_NAMES = ["background", "CSF", "grey_matter", "white_matter"]  #csf = cerebrospinal fluid
+# standard OASIS 4-class convention; verify against dataset docs if precise anatomical labelling is asked
 MASK_DIVISOR = 85  # raw mask values {0,85,170,255} -> class indices {0,1,2,3}
 
 BATCH_SIZE = args.batch_size
@@ -128,6 +123,8 @@ class OASISSegDataset(Dataset):
 # ----------------------------------------------------------------------
 # Model
 # ----------------------------------------------------------------------
+
+# the repeated building blocks 3x3 with stride = 1, keeps spatial size unchanged never changes resolution.
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
@@ -215,6 +212,10 @@ def hard_dsc(logits, targets, num_classes, eps=1e-6):
     intersection = torch.sum(preds_onehot * targets_onehot, dims)
     cardinality = torch.sum(preds_onehot + targets_onehot, dims)
     return (2 * intersection + eps) / (cardinality + eps)  # [num_classes]
+
+# DSC Formula: DSC = 2·|X ∩ Y| / (|X| + |Y|), where X = predicted pixels for a class, 
+# Y = true pixels for that class. Ranges 0 (no overlap) to 1 (perfect match).
+# eps prevents division by zero error if some class never appears at all in a given batch
 
 
 # ----------------------------------------------------------------------
