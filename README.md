@@ -31,7 +31,7 @@ Lab2/
 │       ├── lab2_part3.2_train.py      # DataLoader baseline
 │       ├── lab2_part3.2_train_gpu.py  # final GPU-resident pipeline
 │       ├── lab2_part3.2_demo.py       # live epoch + inference script
-│       ├── job4.sh, job5.sh, job6.sh
+│       ├── job5.sh, job6.sh
 │       ├── lab2_part3.2.txt
 ├── task1_vae/                # Section 4.4, Task 1
 │   ├── train_vae.py
