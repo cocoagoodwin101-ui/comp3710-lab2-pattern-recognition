@@ -322,16 +322,6 @@ A: The original pipeline shuttled every batch from disk, through CPU-
    transfers almost entirely -- the GPU was never actually the
    bottleneck, the data pipeline feeding it was.
 
-Q: Is that allowed -- isn't it "cheating" to change the data
-   pipeline instead of the model?
-A: Yes it's allowed. The architecture is unchanged -- it is still the
-   exact same from-scratch ResNet-18 doing the exact same learning
-   task on the exact same data with the exact same augmentation
-   logic. Only how the data gets to the GPU changed. This mirrors
-   exactly what real DAWNBench-winning approaches did: identifying
-   and removing the actual bottleneck, which in this case was I/O and
-   CPU-side preprocessing, not GPU compute or model capacity.
-
 Q: Why did increasing batch size to 1024 make things worse?
 A: Every batch-1024 configuration tested (with multiple learning
    rates and epoch counts) underperformed the equivalent batch-512
@@ -358,15 +348,6 @@ A: I explicitly tested both directions -- lower (0.35) and higher
    outperformed all of them consistently, including across two
    different batch sizes (512 and 1024). That rules out both "you
    should go lower" and "you should go higher" as easy wins.
-
-Q: The benchmark says V100, but you ran on an A100 -- is that a
-   problem?
-A: No -- the requirement is to match or beat a stated time reference,
-   not to use identical hardware. Rangpur's comp3710 partition
-   provisions A100 GPUs, which are newer and generally faster than
-   V100s, particularly for mixed-precision Tensor Core workloads. If
-   anything this works in my favour as a fair or generous comparison,
-   not an unfair one.
 
 Q: What was the EMA (Exponential Moving Average) attempt, and why
    did you abandon it?
@@ -397,3 +378,66 @@ A: That the real bottleneck in a training pipeline isn't always where
    biggest win by far -- a 7x speedup -- came from recognising that
    the CPU-side data loading pipeline, not the GPU or the model, was
    the actual constraint the whole time.
+
+
+Full Resnet18 network diagram:
+The teal stages (Layer1-4) are each two stacked residual blocks — not single layers. 
+layer1 has 2 BasicBlocks at 64 channels with no downsampling (stride=1), 
+while layer2, layer3, layer4 each start with a stride=2 block that both doubles the channel count 
+and halves spatial resolution, before a second stride=1 block at the new size. 
+That's why the diagram shows channel count climbing (64→128→256→512) while spatial size 
+implicitly shrinks — by the time you reach AvgPool, the 32×32 input has been reduced 
+all the way down to a small spatial map with 512 channels, which AdaptiveAvgPool2d((1,1)) 
+then collapses into a single 512-length vector per image.
+
+The bottom inset is what's actually inside every one of those teal boxes, repeated 
+many times throughout the network — this is the same residual mechanism from before, 
+but now you can see exactly where it sits in the bigger picture: x splits into two paths, 
+one goes through both convolutions, the other skips straight to the addition point, and 
+they rejoin before the final ReLU. If asked "how many of these blocks are there total," 
+the answer is 8 BasicBlocks (2 per stage × 4 stages) — each one identical in structure to this 
+inset, just with different channel counts and occasionally a stride=2 shortcut conv, as you covered earlier.
+
+The FC box producing 10 classes is your final nn.Linear(512, num_classes) — same conceptual role as 
+Part 3.1's dense output layer, just now taking 512 pooled features instead of the flattened 
+conv output, and outputting CIFAR-10's 10 class scores (plane, car, bird, etc.) instead of LFW's 7 identities.
+
+What's the "Stem" box? — the "stem" is the very first layer (or small group of layers) at 
+the front of a CNN, applied directly to the raw input before the main repeated block 
+structure begins. In your ResNet-18, that's exactly self.conv1 + self.bn1 + the first ReLU: 
+a single 3×3, stride-1 convolution mapping the raw 3-channel image up to 64 channels, 
+with no downsampling. It's called out separately from layer1-layer4 specifically because 
+this is the piece you customised — the standard ImageNet ResNet-18's stem is a 7×7 stride-2 conv + maxpool, 
+and swapping it for this gentler version is the CIFAR adaptation
+
+
+One Cycle Scheduler image:
+The shape, concretely, using your actual parameters (max_lr=0.4, pct_start=0.3, div_factor=10, final_div_factor=100)
+What the shape means, tied to your parameters:
+
+pct_start=0.3 — the first 30% of training is the rising phase: LR climbs from max_lr/div_factor = 0.4/10 = 0.04 
+all the way up to the peak max_lr = 0.4. This is the "warm-up" — training starts cautiously, 
+then ramps up to an aggressive learning rate once the network has moved past its random initial weights.
+The remaining 70% is the annealing phase: LR smoothly decays (following a cosine curve, PyTorch's default) 
+all the way down to max_lr/(div_factor*final_div_factor) = 0.4/(10*100) = 0.0004 — a tiny fraction of the 
+peak, letting the model settle precisely into a good minimum by the end rather than still bouncing around with a large step size.
+
+Why this specific shape works better than a flat learning rate: a high LR early lets the network make 
+large, fast corrections while it's still far from any good solution — wasted precision here doesn't 
+matter much. As training progresses and the model gets closer to a good set of weights, a large LR would 
+start overshooting and bouncing past the minimum; annealing it down lets the later steps be small and precise 
+instead. It's essentially "move fast when you're far away, move carefully when you're close."
+
+Why SGD + OneCycle instead of Adam, specifically:
+
+Adam adapts its learning rate automatically per-parameter, using running estimates of each parameter's gradient 
+magnitude and variance. This makes it very forgiving — it "just works" reasonably well without much tuning, and 
+converges quickly early on.
+But empirically, on CNN image-classification tasks specifically, Adam tends to converge to a lower final 
+accuracy ceiling than well-tuned SGD. Adam's adaptive per-parameter steps can settle into wider, "flatter" but 
+less optimal regions, while SGD's uniform step size combined with momentum tends to find sharper, higher-accuracy 
+minima — provided the learning rate schedule is tuned well, since SGD is much less forgiving of a badly-chosen LR than Adam is.
+OneCycle is specifically what makes SGD's tuning burden manageable — instead of hand-picking one 
+fixed LR and hoping it's right for the whole training run, you pick one peak value and let the schedule 
+handle the rest. This combination (SGD + momentum + OneCycle) is the exact recipe used by the real DAWNBench-winning 
+fast-training approaches your lab sheet's V100 benchmark references

@@ -1,0 +1,113 @@
+PART 3.2 - DEMO DAY COMMANDS
+Live "one epoch of training + inference" run on Rangpur
+======================================================================
+
+PURPOSE
+----------------------------------------------------------------------
+This satisfies the requirement: "the model must run inference and a
+single epoch of training on the Rangpur compute cluster during the
+demonstration." lab2_part3.2_demo.py loads the already-trained weights
+(resnet18_cifar10.pth) and:
+  1. Runs one full, live, timed training epoch
+  2. Runs inference on a small batch of test images with visible
+     correct/incorrect predictions printed
+
+This is DELIBERATELY separate from the main training script, so there
+is zero risk of accidentally re-triggering a multi-minute full training
+run in front of the demonstrator.
+
+
+BEFORE THE DEMO (do this once, in advance, not live)
+----------------------------------------------------------------------
+Confirm the trained weights file exists and matches your best result:
+
+  ssh s4883100@rangpur.compute.eait.uq.edu.au
+  cd ~/comp3710_lab2
+  ls -la resnet18_cifar10.pth
+
+If missing or outdated, re-run the final training script first:
+
+  sbatch job5.sh
+  squeue --me
+  (wait for it to finish, then check the .out file for the final
+  accuracy/time numbers before proceeding)
+
+
+LIVE DEMO COMMANDS (run these in front of the demonstrator)
+----------------------------------------------------------------------
+
+Step 1 - SSH in (if not already connected):
+  ssh s4883100@rangpur.compute.eait.uq.edu.au
+
+Step 2 - Navigate to the working directory:
+  cd ~/comp3710_lab2
+
+Step 3 - Submit the demo job:
+  sbatch job6.sh
+
+Step 4 - Note the job ID printed (e.g. "Submitted batch job 591234"),
+then watch it run live:
+  squeue --me
+  (wait for status to show R, running - should start quickly and
+  finish within about 15-20 seconds total: ~11-15s for the one epoch,
+  plus a couple seconds for inference)
+
+Step 5 - Show the demonstrator the live output:
+  cat demo_<jobid>.out
+
+Expected output looks like:
+  Using device: cuda
+  Loaded trained weights.
+  Running one live training epoch...
+  One epoch completed in 11.4s
+  Sample predictions:
+    True: truck       Predicted: truck       [correct]
+    True: cat         Predicted: cat         [correct]
+    ... (8 sample predictions total)
+  Batch accuracy on this sample: 16/16
+
+
+IF ASKED ABOUT THE .err WARNINGS
+----------------------------------------------------------------------
+If the demonstrator looks at demo_<jobid>.err and asks about warnings
+in there, they are harmless and expected:
+  - "DataLoader worker number" warning: just a suggestion about worker
+    process count for this machine, not an error.
+  - "torch.cuda.amp is deprecated" FutureWarning (x3): PyTorch flagging
+    that this mixed-precision API will be renamed in a future release.
+    Code runs correctly today regardless.
+
+Prepared answer: "Those are deprecation and configuration warnings,
+not errors - the script completed successfully with correct output."
+
+
+ALTERNATIVE: RUNNING INTERACTIVELY INSTEAD OF VIA sbatch
+----------------------------------------------------------------------
+If you'd rather run it live in an interactive session (so you can
+narrate each line as it happens, rather than submitting and waiting):
+
+  srun --partition=comp3710 --account=comp3710 --gres=gpu:1 --time=00:05:00 --pty bash
+  conda activate torch
+  cd ~/comp3710_lab2
+  python -u lab2_part3.2_demo.py
+
+This shows output directly in your terminal in real time rather than
+writing to a .out file - may feel more "live" for a demonstration, at
+the small risk of a longer queue wait for an interactive GPU slot
+compared to a quick batch job. Exit the session when done:
+  exit
+
+
+QUICK TROUBLESHOOTING IF SOMETHING GOES WRONG LIVE
+----------------------------------------------------------------------
+- Job stuck in PD (pending) for a while: normal queue contention, just
+  wait - do NOT panic-cancel and resubmit repeatedly, that just
+  re-queues you at the back.
+- "No such file or directory" for resnet18_cifar10.pth: the weights
+  file is missing - fall back to explaining the code and result numbers
+  from Part3.2_DAWNBench_Story.txt while it's resolved, or re-run
+  job5.sh if there's time.
+- Script errors out entirely: check demo_<jobid>.err for the traceback;
+  most likely cause would be an environment issue (conda not activated
+  correctly) rather than a code bug, since this script has already been
+  verified working.
