@@ -31,8 +31,15 @@ mean = np.mean(X_train, axis=0)
 X_train = X_train - mean
 X_test = X_test - mean
 
+# PCA finds directions of maximum variance. Without mean-centering, the 
+# first component would be dominated by the average face's brightness/shape rather 
+# than the meaningful variation between different faces.
+
 # ---- PCA via SVD ----
-U, S, V = np.linalg.svd(X_train, full_matrices=False)
+U, S, V = np.linalg.svd(X_train, full_matrices=False) 
+# SVD factorises X = U*S*V^T directly, and the rows of V^T mathematically
+# are the principal components, without ever forming the potentially large 
+# and less numerically stable covariance matrix explicitly.
 components = V[:n_components]
 eigenfaces = components.reshape((n_components, h, w))
 

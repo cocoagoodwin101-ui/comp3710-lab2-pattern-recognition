@@ -70,3 +70,31 @@ eigenface captures progressively finer, more localised variation,
 because SVD orders components by how much variance they explain, from 
 most to least. Early components = broad global patterns; later 
 components = subtle localised differences. 
+
+This matters because: with only 7 classes and heavy imbalance, a classifier working off 
+features that are initially dominated by shared/global patterns has less to latch onto 
+for rare classes like Ariel Sharon (13 samples) — it's easier to build a good enough model 
+to reliably distinguish the class you see most (Bush, 146 samples) than to also isolate the 
+fine feature-level detail (from later eigenfaces) that would properly identify someone you've 
+only seen 13 examples of. So the PCA feature quality itself compounds with class imbalance to 
+hurt minority classes — not just the classifier's behaviour in isolation.
+
+PCA correctly found a compact, well-ordered basis — you can literally watch identity
+information go from broad/global in the early components to fine/localised in the later ones 
+— but a linear decomposition plus a generic classifier still tops out at 62% because it has 
+no way to prioritise identity-discriminative features over shared appearance patterns, and 
+that limitation is compounded by real class imbalance in the dataset itself.
+
+What is the linear decomposition part? It refers to PCA — each eigenface is just a 
+weighted sum (linear combination) of the original 1850 pixel values, nothing more complex. 
+This is contrasted with a CNN, which can learn non-linear transformations of the input 
+(via activation functions between layers), letting it capture more complex relationships 
+than a single linear projection ever could.
+
+Recommendation for the imbalanced dataset:  PCA is unsupervised and never 
+looks at class labels, so it's completely unaffected by imbalance; the problem lives 
+entirely in the classifier stage. The right fixes are class_weight='balanced' on the 
+Random Forest (penalising misclassification of rare classes more heavily), 
+oversampling/undersampling to balance the training distribution, confirming stratify=y 
+was used in the train/test split, and evaluating with macro-averaged F1 rather than raw 
+accuracy, since accuracy rewards nailing the majority class while macro-F1 treats every class equally.
