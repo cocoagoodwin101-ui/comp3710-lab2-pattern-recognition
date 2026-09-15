@@ -11,3 +11,10 @@ Full TEST SET per-class DSC (544 slices, all of them):
   grey_matter    : 0.9653  [PASS, threshold 0.9]
   white_matter   : 0.9791  [PASS, threshold 0.9]
 Job finished Tue Sep 15 09:53:06 AEST 2026
+
+
+Class	        Single slice (case_452_slice_14)	Full test set (544 slices)
+background	  0.9993	                          0.9993
+CSF	          0.9691	                          0.9573
+grey_matter	  0.9674	                          0.9653
+white_matter	0.9803	                          0.9791

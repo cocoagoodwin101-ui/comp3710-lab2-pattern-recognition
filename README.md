@@ -258,10 +258,10 @@ concept explanations, and results table.
 ---
 
 ## Section 4.4, Task 1: Variational Autoencoder (VAE)
-
+ 
 **Goal:** train a VAE on OASIS brain slices and visualise the learned
 latent manifold.
-
+ 
 **Approach:** three deliberate iterations rather than a single run:
 1. **Baseline** — 2D latent space (chosen specifically so the manifold
    could be visualised as a directly-decoded image grid), 128x128
@@ -274,76 +274,88 @@ latent manifold.
    latent space. Since a decodable grid isn't possible in 16D, visualised
    instead via a UMAP projection of encoded real images and direct latent
    interpolation between real image pairs.
-
 **Results:**
-
+ 
 | Run | Latent dim | β | Final recon loss | Final KL |
 |---|---|---|---|---|
 | baseline | 2 | 1.0 | 4163.67 | 6.33 |
 | beta_low | 2 | 0.5 | 4167.94 | 7.33 |
 | latent16 | 16 | 1.0 | 4063.08 | 23.09 |
-
+ 
 The 16D latent space and UMAP scatter revealed the latent space is locally
 smooth (adjacent slices from the same patient cluster together) but
 globally organised by patient identity (inter-patient anatomical variation
 dominates over slice-position variation).
-
+ 
 **Key files:** `train_vae.py` (dataset, encoder/decoder, loss, training
 loop, all three visualisation modes), `job_vae.sh` (Slurm submission,
 accepts `--run_name`, `--beta`, `--latent_dim`).
-
+ 
 **Results:** see `task1_vae/results/` — `manifold.png`, `reconstructions.png`,
 `loss_curve.png` (2D baseline); `umap_scatter.png`, `latent_interpolation.png`,
 `reconstructions_16d.png` (16D run).
-
+ 
 ---
-
+ 
 ## Section 4.4, Task 2: UNet Segmentation
-
+ 
 **Goal:** segment OASIS brain slices into 4 classes, achieving >0.9 DSC on
 every class individually, with categorical output and a live inference
 demonstration.
-
+ 
 **Approach:** standard 4-downsampling-stage UNet (DoubleConv blocks,
 32→64→128→256→512 channels, skip connections) trained at native 256x256
 resolution (no downsampling, unlike the VAE — segmentation has a strict
 accuracy bar that resolution loss would directly threaten). Loss is
 combined Dice + cross-entropy, since Dice directly optimises the same
 overlap quantity as the DSC evaluation metric.
-
+ 
 **Results (final epoch, validation set):**
-
+ 
 | Class | DSC | Threshold |
 |---|---|---|
 | background | 0.9995 | PASS (>0.9) |
 | CSF | 0.9535 | PASS (>0.9) |
 | grey_matter | 0.9634 | PASS (>0.9) |
 | white_matter | 0.9777 | PASS (>0.9) |
-
-Confirmed on a genuine held-out live inference run (`case_453_slice_8`):
-background 0.9989, CSF 0.9554, grey_matter 0.9418, white_matter 0.9595 —
-all passing, consistent with training-time numbers.
-
+ 
+**Results confirmed on the held-out TEST set — both a single live-inference
+slice and the full test set (544 slices), to cover both readings of the
+"run inference on a test set" requirement:**
+ 
+| Class | Single slice (`case_452_slice_14`) | Full test set (544 slices) | Threshold |
+|---|---|---|---|
+| background | 0.9993 | 0.9993 | PASS (>0.9) |
+| CSF | 0.9691 | 0.9573 | PASS (>0.9) |
+| grey_matter | 0.9674 | 0.9653 | PASS (>0.9) |
+| white_matter | 0.9803 | 0.9791 | PASS (>0.9) |
+ 
+The single-slice and full-test-set numbers are close to each other on
+every class, showing the live demo slice is representative of genuine,
+consistent performance across the whole test set rather than a
+cherry-picked example.
+ 
 **Key files:** `train_unet.py` (dataset with case/seg filename pairing,
 UNet model, Dice+CE loss, per-class DSC tracking), `infer_unet.py`
-(standalone fast inference script for the live demo), `job_unet.sh` /
-`job_unet_infer.sh`.
-
+(standalone fast single-slice inference script for the live demo),
+`evaluate_test_set.py` (aggregate DSC across the entire test set),
+`job_unet.sh` / `job_unet_infer.sh` / `job_evaluate_test.sh`.
+ 
 **Results:** see `task2_unet/results/` — `loss_curve.png`, `dsc_curve.png`,
-`predictions.png`, `live_inference.png`.
-
+`predictions.png`, `live_inference.png`, `test_set_dsc.txt`.
+ 
 ---
-
+ 
 ## Section 4.4, Task 3 (Hard tier): WGAN-GP Brain Generation
-
+ 
 **Goal:** generate realistic, diverse brain MRI slices from noise, with
 mode collapse fully resolved.
-
+ 
 **Approach:** WGAN-GP (Wasserstein GAN with Gradient Penalty), chosen over
 a simpler DCGAN specifically for training stability. Prototyped on MNIST
 first (Phase A) to validate the training loop mechanics cheaply before
 touching OASIS, then ported to OASIS at 64x64 (Phase B).
-
+ 
 **Notable finding:** a genuine bug was found and fixed in the sample-grid
 visualisation code (an indexing error was rendering only the top row of
 each generated image, broadcast into vertical stripes) — this had made
@@ -351,18 +363,18 @@ each generated image, broadcast into vertical stripes) — this had made
 After fixing the visualisation and regenerating from the existing
 checkpoint (no retraining needed, since the trained weights were never
 wrong), the results showed clearly realistic, diverse brain anatomy.
-
+ 
 **Results:** 100 epochs (~15,100 generator updates) on the full OASIS
 training set. Final random-noise sample grid shows genuine diversity
 across ventricle shape, brain outline, and brightness — no mode collapse.
-
+ 
 **Key files:** `train_gan_mnist.py` (Phase A prototype), `train_gan_oasis.py`
 (Phase B, with checkpoint/resume support), `regenerate_gan_samples.py`
 (post-hoc corrected visualisation from a saved checkpoint).
-
+ 
 **Results:** see `task3_gan/results/` — `loss_curves.png`,
 `CORRECTED_fixed_epoch_100.png`, `CORRECTED_random_samples.png`.
-
+ 
 ---
 
 ## AI Usage
