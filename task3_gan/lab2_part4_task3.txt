@@ -151,15 +151,6 @@ CORRECTED_random_samples.png
   brain outline, and brightness across all 64 samples: no collapse.
 
 
-OUTCOME
-----------------------------------------------------------------------
-Task 3 (optional hard-tier) requirements -- realistic images, training
-evidence (loss plots + generated images), mode collapse resolved --
-are met, confirmed only after finding and fixing a real visualisation
-bug that had made the actual result look far worse than it was. A
-genuine, disclosed limitation remains around checkpoint history not
-being preserved, which is presented honestly rather than hidden.
-
 
 LIKELY TUTOR QUESTIONS AND ANSWERS
 ----------------------------------------------------------------------
@@ -245,3 +236,155 @@ A: Save versioned checkpoints (e.g. checkpoint_epoch_010.pt,
    checkpoint_epoch_020.pt, ...) instead of overwriting a single
    checkpoint.pt file, so the full training trajectory could be
    inspected and compared after the fact, not just the final state.
+
+
+Critic:
+Channel count does mostly increase as the grid shrinks (1→64→128→256→512) — but the very last layer 
+collapses all the way down to just 1, and that's the important part to fix:
+The critic does not output a "vector" or a per-pixel grading map. The final layer 
+(512 → 1 channel, 4×4 kernel, stride 1, on a 4×4 input) produces exactly one number for the entire 
+image — not one score per pixel. Think of it like the encoder side of the VAE or UNet: 
+early layers see fine detail, deep layers see broad context, and by the end everything has been 
+boiled down to a single, whole-image verdict: "how real does this entire image look, overall?"
+
+Critic starts at 64×64 with 1 channel — raw pixels, maximum fine-grained visual detail, 
+but each individual conv position only "sees" a tiny patch, no big-picture sense of the whole 
+image yet. By the end, it's collapsed to a single number — all that detail has been consolidated 
+into one broad, whole-image verdict. So the critic's real direction is: fine/detailed → abstract/broad
+
+critic_loss = -(critic_real - critic_fake) + LAMBDA_GP * gp
+The critic is trained to maximize critic_real - critic_fake — meaning it wants critic(real) 
+to go up and critic(fake) to go down. So a high score is the critic saying "this looks real" — 
+real images are what get pushed toward high scores, always. It's not "high = fake" on some fakeness scale; 
+it's "high = convincing," full stop, and the critic is trying to reserve high scores for genuine real images only.
+
+a standard discriminator's sigmoid output can get extremely close to 0 or 1 when it's very confident — 
+and right at those extremes, the sigmoid function's slope goes nearly flat. A flat slope means almost 
+no gradient signal reaches the generator ("vanishing gradients") — the generator gets told "you're wrong" but 
+with almost no useful information about how wrong or which direction to move. The critic's raw, unbounded 
+score never flattens out like that — it can keep providing a meaningful, non-vanishing gradient no matter how 
+confidently it's currently rating something.
+
+Generator:
+gen_loss = -critic(fake).mean()
+The optimizer minimizes gen_loss. Minimizing -critic(fake) is mathematically the same as 
+maximizing critic(fake) — so the generator is trying to push its own fakes' scores up, not down. 
+The generator wants the critic to rate its fakes highly (fooling it into thinking they're real), 
+and the critic is simultaneously trying to keep pushing fake scores back down.
+Generator starts at 4×4 with 512 channels — this is the most abstract, 
+most compressed state (tiny grid, many abstract "concepts" encoded per location, but almost 
+no visible spatial structure yet — you couldn't look at this and see a brain). By the end, 
+it's 64×64 with 1 channel — every one of those abstract concepts has been "cashed in" and 
+converted into actual, visible pixel-level detail. So the real direction is: 
+abstract/broad → fine/detailed, not the other way around.
+
+
+
+BCE → Wasserstein loss is the fix for the vanishing/unstable gradient problem (critic gets too confident, 
+generator gets no useful signal). This swap alone is what "WGAN" (without the "-GP") already does.
+Wasserstein distance measures the difference between two probability distributions 
+by calculating the minimum "cost" required to transform one distribution into the other. 
+The critic's loss (critic_real − critic_fake, which it tries to maximize) 
+is a mathematical approximation of that distance between the two distributions. 
+As training progresses and the generator improves, that distance should shrink toward zero — 
+meaning "the generator's distribution and the real distribution are becoming hard to tell apart."
+
+Gradient penalty: the math behind Wasserstein distance only works correctly if the critic function 
+is "1-Lipschitz" (a smoothness constraint — the function can't change output faster than a 1:1 rate relative 
+to how much its input changes). Switching to Wasserstein loss doesn't automatically give you that 
+smoothness; you have to enforce it separately, and gradient penalty is the mechanism that does the enforcing.
+
+Not "prevents the critic from jumping too high" — the raw score is allowed to be any value,
+no ceiling. What it actually constrains is how fast the score is allowed to change as you 
+nudge the input image slightly — that's what "1-Lipschitz" precisely means: the critic's output 
+can't change faster than a 1-to-1 rate relative to how much the image itself changed. This constraint 
+has to be enforced specifically because the Wasserstein-distance math only gives a valid, meaningful 
+distance estimate when the critic obeys that smoothness rule — without it, the critic could make 
+its scores arbitrarily steep, and the "distance" it reports would stop meaning anything real.
+
+
+Normalisation Layers:
+A normalization layer takes whatever numbers come out of the previous conv layer and 
+rescales them to have a mean of 0 and a standard deviation of 1, before the next layer sees them. 
+This keeps activation values from drifting to huge or tiny magnitudes as they pass through many 
+layers, which makes training much more stable.
+difference between BatchNorm and InstanceNorm is which numbers get averaged together to compute that mean/std:
+BatchNorm: computes one mean and one std per channel, but averaged across every
+ image in the current batch simultaneously. Image A's normalization is influenced by what
+  images B, C, D... in the same batch look like.
+InstanceNorm: computes a separate mean and std per image, per channel, using only that
+ single image's own pixels. Image A's normalization depends only on image A — no cross-contamination
+  with anything else in the batch.
+
+the whole gradient penalty calculation is built on the idea of treating each interpolated
+image completely independently — computing "how does the critic's score change if I nudge this 
+one image slightly." If BatchNorm is in the mix, that image's actual output is quietly influenced 
+by whatever else happens to be sitting in the same batch
+
+
+
+
+WGAN-GP — QUICK REFERENCE (Task 3)
+
+GENERATOR (5 ConvTranspose2d layers):
+- Input: 100 random numbers (noise vector z)
+- Starts abstract/compressed: 4x4 grid, 512 channels
+- Each layer: channels DECREASE, grid size INCREASES (stride 2)
+- Ends fine/detailed: 64x64 grid, 1 channel, Tanh activation
+- Direction: abstract concepts -> cashed in as visible pixel detail
+
+CRITIC (5 Conv2d layers) — mirror image of generator:
+- Input: 64x64 image (real or fake), 1 channel
+- Starts fine/detailed: raw pixels, small receptive field
+- Each layer: channels INCREASE, grid size DECREASES (stride 2)
+- Ends abstract/consolidated: single raw score (not per-pixel, not a vector)
+- Direction: fine detail -> one whole-image verdict
+
+CRITIC OUTPUT:
+- One raw, UNBOUNDED number per image (no sigmoid)
+- HIGH score = critic is confident the image is REAL
+- Critic trained to maximize: critic(real) - critic(fake)
+  -> pushes real scores up, fake scores down
+- Generator trained to maximize critic(fake)
+  -> tries to push its own fakes' scores up
+- That opposing push is the whole adversarial dynamic
+One critic score (what you get from critic(single_image)) is just that one image's individual "how real does this look" rating
+The actual Wasserstein distance estimate is the difference between two averages
+average score across a batch of REAL images -
+average score across a batch of FAKE images
+
+WHY NOT BCE (standard GAN loss):
+- Sigmoid output can saturate near 0 or 1 when critic is very confident
+- Near those extremes, sigmoid's slope is nearly flat -> vanishing gradients
+- Generator gets "you're wrong" with almost no usable direction/magnitude
+- Raw unbounded critic score never flattens like that -> gradient stays useful
+
+WASSERSTEIN DISTANCE (plain version):
+- "Earth Mover's distance" — the minimum "work" to reshape one distribution
+  into another (move the least dirt, the shortest distance)
+- Real images = distribution A, generator's outputs = distribution B
+- critic_real - critic_fake approximates the distance between A and B
+- As generator improves, this distance should shrink toward 0
+- Stays mathematically meaningful even early in training when real/fake
+  look very different — BCE's weak spot
+
+GRADIENT PENALTY:
+- Enforces the critic to be "1-Lipschitz"
+- NOT about capping how high the score can go
+- Controls HOW FAST the score can change as the input image changes
+  slightly (rate of change, not magnitude of output)
+- Required because Wasserstein distance is only a valid/meaningful
+  estimate if the critic obeys this smoothness constraint
+- Computed on random blends between real and fake images ("interpolates"),
+  penalizing the gradient norm for straying from exactly 1
+
+WHY INSTANCENORM, NOT BATCHNORM (in the critic):
+- Both rescale activations to mean 0, std 1 — keeps values from
+  exploding/shrinking across layers, stabilizes training
+- BatchNorm: normalizes using stats averaged ACROSS the whole batch
+  -> one image's output is influenced by other images in the same batch
+- InstanceNorm: normalizes using stats from ONLY that single image
+  -> every image's path through the network is fully independent
+- Gradient penalty needs each interpolated image treated independently
+  -> BatchNorm would violate that; InstanceNorm keeps it clean
+- (First critic layer uses no normalization at all, by convention)
