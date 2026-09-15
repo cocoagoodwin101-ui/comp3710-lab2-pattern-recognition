@@ -14,8 +14,8 @@ def square_wave_torch(t):
     return torch.sign(torch.sin(2.0 * torch.pi * f0 * t))
 
 def square_wave_fourier_torch(t, f0, Nh):
-    n = torch.arange(1, 2 * Nh, 2, device=t.device, dtype=t.dtype)  # odd harmonics 1,3,5...
-    terms = torch.sin(2 * torch.pi * n.unsqueeze(1) * f0 * t.unsqueeze(0)) / n.unsqueeze(1)
+    n = torch.arange(1, 2 * Nh, 2, device=t.device, dtype=t.dtype)  # odd harmonics 1,3,5... [1, Nh]
+    terms = torch.sin(2 * torch.pi * n.unsqueeze(1) * f0 * t.unsqueeze(0)) / n.unsqueeze(1) # [N, 1]
     return (4 / torch.pi) * terms.sum(dim=0)
 
 # ---- Naive DFT as a GPU matrix multiply ----
