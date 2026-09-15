@@ -43,6 +43,9 @@ Lab2/
 │   ├── infer_unet.py
 │   ├── job_unet.sh
 │   ├── job_unet_infer.sh
+    ├── evaluate_test_set.py
+    ├── infer_cmds.txt
+    ├── job_evaluate_test.sh
 │   ├── lab2_part4_task2.txt
 │   └── results/
 └── task3_gan/                  # Section 4.4, Task 3 (Hard tier)
