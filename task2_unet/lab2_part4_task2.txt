@@ -228,6 +228,61 @@ A: infer_unet.py imports classes and constants from train_unet.py,
    script works in isolation forever.
 
 
+UNET for Babies:
+The filter size never changes — it's always a 3×3 window, at every single layer, top to bottom. 
+What changes is the size of the grid that 3×3 window slides across (256→128→64→32→16). As the grid shrinks, 
+that same fixed 3×3 window is now looking at a bigger chunk of the original image per step, because each 
+remaining cell already represents several original pixels squashed together by pooling. That's not "zooming in" — 
+it's the opposite, more like zooming out: shallow layers are a detailed street map (every tiny alley visible, 
+but no sense of the whole city), and the bottleneck is a zoomed-out country map (you can see the overall regions, 
+but individual streets are gone).
+So as you go toward the bottleneck: you gain context ("this general area is probably grey matter") 
+but lose fine spatial precision (exactly where the boundary sits). You don't gain more detail near the bottleneck — 
+you lose it. That's precisely why skip connections exist: they're the mechanism that reinjects the fine detail 
+that pooling threw away, by carrying the shallow, high-resolution features directly across to the matching 
+decoder stage, so the decoder gets both "what kind of tissue is this" (from the bottleneck path) and 
+"exactly where's the edge" (from the skip connection) at the same time.
+
+
+Pooling:
+after every full DoubleConv stage (which itself contains two convs at the same resolution, 
+since padding=1 keeps size unchanged). The order is: process at the current resolution with DoubleConv, 
+then pool to shrink before handing off to the next stage. So pooling sits between stages, not inside them.
+What MaxPool2d(2) actually does
+It slides a 2×2 window across the feature map, and for every non-overlapping 2×2 block, it keeps only the 
+single largest value and throws the other three away.
+Do that for every 2×2 block across the whole map (independently, per channel), and you get an output exactly 
+half the height and half the width — channels unchanged, since pooling never mixes channels together, 
+only spatial neighbors within one channel.
+Why "max" specifically: "did this particular feature (edge, texture, whatever this channel detects) fire strongly 
+anywhere in this small patch?" — keeping the strongest response and discarding the weaker three preserves the 
+most salient signal while giving a bit of tolerance to small shifts in exactly where that feature sat. 
+The cost, obviously, is that the other three values — including their exact positions — are genuinely, permanently gone. 
+That's the precise "detail lost" we've been discussing, and it's why skip connections have to carry the original 
+e1/e2/e3/e4 features across separately — pooling's information loss is otherwise irreversible.
+
+
+Opposite ConvTranspose2d after bottleneck:
+self.up4 = nn.ConvTranspose2d(base * 16, base * 8, 2, stride=2)
+has real, learnable weights — it's not a fixed rule like pooling, it's trained via backpropagation.
+A normal conv looks at a neighborhood of input pixels and combines them (weighted by the kernel) down into one output value. 
+A transposed conv does the reverse: it takes one input value, multiplies it by a small learned kernel (here, 2×2), 
+and "stamps" that weighted pattern outward onto a neighborhood of output pixels. With kernel_size=2, stride=2 specifically,
+each stamp lands on its own non-overlapping 2×2 patch of the output — so one input pixel cleanly becomes a 2×2 block 
+of output pixels, cleanly doubling both dimensions, with no overlap between neighboring stamps to worry about.
+Does not restore the exact values pooling threw away — that information is genuinely gone. What it does instead is 
+generate new, plausible values, learned during training to produce a sensible higher-resolution version. 
+Needs help from the skip connections (real detail from the matching encoder stage) and the following 
+DoubleConv (which refines the combined result) to actually produce sharp, accurate boundaries.
+
+
+
+Skip Connections:
+see the forward() function. it's just holding onto a variable, then stacking it as extra channels
+(torch.cat, not adding) right before the decoder's next conv layer, so that layer's own weights can learn 
+how to use both sources of information together.
+
+
 UNET Architecture Diagram image:
 Purple boxes (left column) = encoder, flowing downward. 
 Teal boxes (right column) = decoder, flowing upward. 
